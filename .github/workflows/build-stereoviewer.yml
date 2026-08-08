@@ -25,18 +25,31 @@ jobs:
       - name: Android araclarini kur
         uses: android-actions/setup-android@v3
 
-      - name: Proje ZIP dosyasini ac
-        run: unzip -o StereoViewer-Quest-v0.1.0-project.zip
-
-      - name: Gradle Build ayarini etkinlestir
+      - name: Gerekli Android paketlerini kur
+        shell: bash
         run: |
-          sed -i 's/gradle_build\/use_gradle_build=false/gradle_build\/use_gradle_build=true/' StereoViewer/export_presets.cfg
-          grep 'gradle_build/use_gradle_build=true' StereoViewer/export_presets.cfg
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "cmdline-tools;latest"
 
-      # Bu adim Godot'u ve Android export template dosyalarini indirir.
-      # Android build template henuz kurulmadigi icin ilk export denemesi
-      # hata verebilir; sonraki adimda template otomatik kurulacaktir.
-      - name: Godot ve export template dosyalarini hazirla
+      - name: Proje ZIP dosyasini ac
+        shell: bash
+        run: |
+          unzip -o StereoViewer-Quest-v0.1.0-project.zip
+          test -f StereoViewer/project.godot
+          test -f StereoViewer/export_presets.cfg
+
+      - name: Quest export ayarlarini duzelt
+        shell: bash
+        run: |
+          sed -i 's|gradle_build/use_gradle_build=false|gradle_build/use_gradle_build=true|' StereoViewer/export_presets.cfg
+          sed -i 's|package/signed=true|package/signed=false|' StereoViewer/export_presets.cfg
+          grep -q 'gradle_build/use_gradle_build=true' StereoViewer/export_presets.cfg
+
+      - name: Godot ve export template dosyalarini indir
         id: godot_prepare
         continue-on-error: true
         uses: firebelley/godot-export@v6.0.0
@@ -47,8 +60,8 @@ jobs:
           archive_output: false
           cache: true
 
-      - name: Godot konumunu bul
-        id: godot
+      - name: Godot ve Android yollarini bul
+        id: paths
         shell: bash
         run: |
           GODOT_BIN="$(find "$HOME/.local/share/godot/godot_executable" -type f -name 'Godot*' -perm -111 | head -n 1)"
@@ -56,7 +69,49 @@ jobs:
             echo "Godot calistirilabilir dosyasi bulunamadi."
             exit 1
           fi
-          echo "bin=$GODOT_BIN" >> "$GITHUB_OUTPUT"
+
+          JAVA_SDK="${JAVA_HOME_17_X64:-$JAVA_HOME}"
+          ANDROID_SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          if [ -z "$JAVA_SDK" ] || [ ! -d "$JAVA_SDK" ]; then
+            echo "Java SDK yolu bulunamadi."
+            exit 1
+          fi
+          if [ -z "$ANDROID_SDK" ] || [ ! -d "$ANDROID_SDK" ]; then
+            echo "Android SDK yolu bulunamadi."
+            exit 1
+          fi
+
+          echo "godot_bin=$GODOT_BIN" >> "$GITHUB_OUTPUT"
+          echo "java_sdk=$JAVA_SDK" >> "$GITHUB_OUTPUT"
+          echo "android_sdk=$ANDROID_SDK" >> "$GITHUB_OUTPUT"
+
+      - name: Godot Android editor ayarlarini yaz
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource format=3]
+
+          [resource]
+          export/android/android_sdk_path = "${{ steps.paths.outputs.android_sdk }}"
+          export/android/java_sdk_path = "${{ steps.paths.outputs.java_sdk }}"
+          EOF
+
+      - name: Debug imza anahtarini hazirla
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore "$HOME/.android/debug.keystore" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
       - name: Android Gradle build template kur
         shell: bash
@@ -64,7 +119,7 @@ jobs:
           TEMPLATE_ZIP="$(find "$HOME/.local/share/godot/export_templates" -type f -name android_source.zip | head -n 1)"
           if [ -z "$TEMPLATE_ZIP" ]; then
             echo "android_source.zip bulunamadi."
-            find "$HOME/.local/share/godot" -maxdepth 4 -type f -print
+            find "$HOME/.local/share/godot/export_templates" -maxdepth 4 -type f -print
             exit 1
           fi
           rm -rf StereoViewer/android/build
@@ -73,14 +128,20 @@ jobs:
           test -f StereoViewer/android/build/build.gradle
 
       - name: Quest APK olustur
+        shell: bash
+        env:
+          ANDROID_HOME: ${{ steps.paths.outputs.android_sdk }}
+          ANDROID_SDK_ROOT: ${{ steps.paths.outputs.android_sdk }}
+          JAVA_HOME: ${{ steps.paths.outputs.java_sdk }}
         run: |
           mkdir -p StereoViewer/build
-          "${{ steps.godot.outputs.bin }}" \
+          "${{ steps.paths.outputs.godot_bin }}" \
             --headless \
+            --verbose \
             --path StereoViewer \
-            --export-release "Quest APK" \
+            --export-debug "Quest APK" \
             "${{ github.workspace }}/StereoViewer/build/StereoViewer-Quest.apk"
-          test -f StereoViewer/build/StereoViewer-Quest.apk
+          test -s StereoViewer/build/StereoViewer-Quest.apk
 
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
