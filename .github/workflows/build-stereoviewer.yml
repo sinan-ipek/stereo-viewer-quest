@@ -102,14 +102,9 @@ jobs:
       - name: Quest OpenXR Vendors eklentisini kur
         shell: bash
         run: |
-          RELEASE_JSON=/tmp/openxr-release.json
           curl -fL --retry 3 \
-            -o "$RELEASE_JSON" \
-            https://api.github.com/repos/GodotVR/godot_openxr_vendors/releases/tags/3.0.1-stable
-
-          PLUGIN_URL="$(python3 -c 'import json; d=json.load(open("/tmp/openxr-release.json")); print(next(a["browser_download_url"] for a in d["assets"] if a["name"].lower().endswith(".zip") and "symbol" not in a["name"].lower() and "sample" not in a["name"].lower()))')"
-          test -n "$PLUGIN_URL"
-          curl -fL --retry 3 -o /tmp/openxr-vendors.zip "$PLUGIN_URL"
+            -o /tmp/openxr-vendors.zip \
+            https://github.com/GodotVR/godot_openxr_vendors/releases/download/2.0.4-stable/godotopenxrvendorsaddon.zip
           rm -rf /tmp/openxr-vendors
           mkdir -p /tmp/openxr-vendors
           unzip -q -o /tmp/openxr-vendors.zip -d /tmp/openxr-vendors
@@ -119,6 +114,12 @@ jobs:
           mkdir -p StereoViewer/addons
           cp -a "$ADDON_DIR" StereoViewer/addons/
           test -d StereoViewer/addons/godotopenxrvendors
+
+          # Bu uygulama yalnizca Meta Quest icindir. Diger cihaz
+          # eklentilerini yuklemeyerek uyumsuz ve gereksiz kutuphaneleri disla.
+          find StereoViewer/addons/godotopenxrvendors \
+            -mindepth 1 -maxdepth 1 -type d ! -name meta -exec rm -rf {} +
+          test -f StereoViewer/addons/godotopenxrvendors/meta/plugin.gdextension
 
       - name: Android Gradle build template kur
         shell: bash
@@ -199,6 +200,7 @@ jobs:
           permissions/write_external_storage=false
           permissions/custom_permissions=PackedStringArray("android.permission.READ_MEDIA_IMAGES")
           xr_features/xr_mode=1
+          xr_features/enable_meta=true
           xr_features/hand_tracking=0
           xr_features/hand_tracking_frequency=0
           xr_features/hand_tracking_version=0
@@ -216,7 +218,7 @@ jobs:
         run: |
           GODOT="$HOME/godot-bin/Godot_v4.3-stable_linux.x86_64"
           "$GODOT" --headless --editor --path StereoViewer --import --quit-after 20
-          test -d StereoViewer/addons/godotopenxrvendors
+          test -f StereoViewer/addons/godotopenxrvendors/meta/plugin.gdextension
           find StereoViewer/.godot/imported -name 'icon.svg-*.ctex' -print -quit | grep -q .
 
       - name: Quest APK olustur
