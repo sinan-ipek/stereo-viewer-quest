@@ -43,6 +43,14 @@ jobs:
           unzip -q -o StereoViewer-Quest-v0.1.0-project.zip
           test -f StereoViewer/project.godot
 
+      - name: Android doku sikistirmasini etkinlestir
+        shell: bash
+        run: |
+          if ! grep -q '^textures/vram_compression/import_etc2_astc=true$' StereoViewer/project.godot; then
+            sed -i '/^\[rendering\]$/a textures/vram_compression/import_etc2_astc=true' StereoViewer/project.godot
+          fi
+          grep -q '^textures/vram_compression/import_etc2_astc=true$' StereoViewer/project.godot
+
       - name: Godot 4.3 ve Android export template dosyalarini kur
         shell: bash
         run: |
