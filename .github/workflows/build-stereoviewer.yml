@@ -124,12 +124,20 @@ jobs:
       - name: Android Gradle build template kur
         shell: bash
         run: |
-          rm -rf StereoViewer/android/build
+          rm -rf StereoViewer/android
           mkdir -p StereoViewer/android/build
           unzip -q -o \
             "$HOME/.local/share/godot/export_templates/4.3.stable/android_source.zip" \
             -d StereoViewer/android/build
+
+          # Godot'un "Project > Install Android Build Template" islemi,
+          # Gradle dosyalarina ek olarak surum bilgisini android klasorune yazar.
+          # Bu dosya olmazsa Godot, mevcut Gradle sablonunu gecersiz sayar.
+          printf '4.3.stable\n' > StereoViewer/android/.build_version
+          touch StereoViewer/android/.gdignore
+
           test -f StereoViewer/android/build/build.gradle
+          test "$(tr -d '\r\n' < StereoViewer/android/.build_version)" = "4.3.stable"
 
       - name: Debug imza anahtarini hazirla
         shell: bash
