@@ -14,6 +14,9 @@ jobs:
       - name: Depoyu indir
         uses: actions/checkout@v4
 
+      - name: Proje ZIP dosyasini ac
+        run: unzip -o StereoViewer-Quest-v0.1.0-project.zip
+
       - name: Godot ile Quest APK olustur
         uses: firebelley/godot-export@v6.0.0
         with:
