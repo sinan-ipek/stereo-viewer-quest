@@ -42,16 +42,57 @@ jobs:
           rm -rf StereoViewer
           unzip -o StereoViewer-Quest-v0.1.0-project.zip
           test -f StereoViewer/project.godot
-          test -f StereoViewer/export_presets.cfg
 
-      - name: Quest export ayarlarini duzelt
+      - name: Tam Quest export presetini yaz
         shell: bash
         run: |
-          sed -i 's|gradle_build/use_gradle_build=false|gradle_build/use_gradle_build=true|' StereoViewer/export_presets.cfg
-          sed -i 's|package/signed=true|package/signed=false|' StereoViewer/export_presets.cfg
+          cat > StereoViewer/export_presets.cfg <<'EOF'
+          [preset.0]
+          name="Quest APK"
+          platform="Android"
+          runnable=true
+          advanced_options=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="build/StereoViewer-Quest.apk"
+          script_export_mode=2
+
+          [preset.0.options]
+          custom_template/debug=""
+          custom_template/release=""
+          gradle_build/use_gradle_build=true
+          gradle_build/gradle_build_directory=""
+          gradle_build/android_source_template=""
+          gradle_build/compress_native_libraries=false
+          architectures/armeabi-v7a=false
+          architectures/arm64-v8a=true
+          version/code=1
+          version/name="0.1.0"
+          package/unique_name="com.stereoguide.viewer"
+          package/name="StereoViewer"
+          package/signed=true
+          keystore/debug="/home/runner/.android/debug.keystore"
+          keystore/debug_user="androiddebugkey"
+          keystore/debug_password="android"
+          permissions/read_external_storage=true
+          permissions/write_external_storage=false
+          permissions/custom_permissions=PackedStringArray("android.permission.READ_MEDIA_IMAGES")
+          xr_features/xr_mode=1
+          xr_features/hand_tracking=0
+          xr_features/hand_tracking_frequency=0
+          xr_features/hand_tracking_version=0
+          screen/immersive_mode=true
+          screen/support_small=true
+          screen/support_normal=true
+          screen/support_large=true
+          screen/support_xlarge=true
+          EOF
+          grep -q 'package/signed=true' StereoViewer/export_presets.cfg
+          grep -q 'keystore/debug=' StereoViewer/export_presets.cfg
           grep -q 'gradle_build/use_gradle_build=true' StereoViewer/export_presets.cfg
-          grep -q 'architectures/arm64-v8a=true' StereoViewer/export_presets.cfg
-          grep -q 'xr_features/xr_mode=1' StereoViewer/export_presets.cfg
 
       - name: Godot ve export template dosyalarini indir
         id: godot_prepare
@@ -71,12 +112,9 @@ jobs:
           GODOT_BIN="$(find "$HOME/.local/share/godot/godot_executable" -type f -name 'Godot*' -perm -111 | head -n 1)"
           JAVA_SDK="${JAVA_HOME_17_X64:-$JAVA_HOME}"
           ANDROID_SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-
-          test -n "$GODOT_BIN"
           test -x "$GODOT_BIN"
           test -d "$JAVA_SDK"
           test -d "$ANDROID_SDK"
-
           echo "godot_bin=$GODOT_BIN" >> "$GITHUB_OUTPUT"
           echo "java_sdk=$JAVA_SDK" >> "$GITHUB_OUTPUT"
           echo "android_sdk=$ANDROID_SDK" >> "$GITHUB_OUTPUT"
@@ -110,7 +148,7 @@ jobs:
           [resource]
           export/android/android_sdk_path = "${{ steps.paths.outputs.android_sdk }}"
           export/android/java_sdk_path = "${{ steps.paths.outputs.java_sdk }}"
-          export/android/debug_keystore = "$HOME/.android/debug.keystore"
+          export/android/debug_keystore = "/home/runner/.android/debug.keystore"
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_pass = "android"
           EOF
