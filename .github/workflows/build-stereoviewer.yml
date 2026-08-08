@@ -21,10 +21,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Android araclarini kur
+      - name: Android SDK kur
         uses: android-actions/setup-android@v3
 
-      - name: Gerekli Android paketlerini kur
+      - name: Android paketlerini kur
         shell: bash
         run: |
           yes | sdkmanager --licenses >/dev/null || true
@@ -36,22 +36,105 @@ jobs:
             "cmake;3.10.2.4988404" \
             "ndk;23.2.8568313"
 
-      - name: Proje ZIP dosyasini ac
+      - name: Projeyi ZIP dosyasindan ac
         shell: bash
         run: |
           rm -rf StereoViewer
-          unzip -o StereoViewer-Quest-v0.1.0-project.zip
+          unzip -q -o StereoViewer-Quest-v0.1.0-project.zip
           test -f StereoViewer/project.godot
+
+      - name: Godot 4.3 ve Android export template dosyalarini kur
+        shell: bash
+        run: |
+          mkdir -p "$HOME/godot-bin"
+          curl -fL --retry 3 \
+            -o /tmp/godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
+          unzip -q -o /tmp/godot.zip -d "$HOME/godot-bin"
+          chmod +x "$HOME/godot-bin/Godot_v4.3-stable_linux.x86_64"
+          echo "$HOME/godot-bin" >> "$GITHUB_PATH"
+
+          curl -fL --retry 3 \
+            -o /tmp/templates.tpz \
+            https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
+          unzip -q -o /tmp/templates.tpz -d /tmp/godot-templates
+          cp -a /tmp/godot-templates/templates/. \
+            "$HOME/.local/share/godot/export_templates/4.3.stable/"
+          test -f "$HOME/.local/share/godot/export_templates/4.3.stable/android_debug.apk"
+          test -f "$HOME/.local/share/godot/export_templates/4.3.stable/android_source.zip"
+
+      - name: Quest OpenXR Vendors eklentisini kur
+        shell: bash
+        run: |
+          RELEASE_JSON=/tmp/openxr-release.json
+          curl -fL --retry 3 \
+            -o "$RELEASE_JSON" \
+            https://api.github.com/repos/GodotVR/godot_openxr_vendors/releases/tags/3.0.1-stable
+
+          PLUGIN_URL="$(python3 -c 'import json; d=json.load(open("/tmp/openxr-release.json")); print(next(a["browser_download_url"] for a in d["assets"] if a["name"].lower().endswith(".zip") and "symbol" not in a["name"].lower() and "sample" not in a["name"].lower()))')"
+          test -n "$PLUGIN_URL"
+          curl -fL --retry 3 -o /tmp/openxr-vendors.zip "$PLUGIN_URL"
+          rm -rf /tmp/openxr-vendors
+          mkdir -p /tmp/openxr-vendors
+          unzip -q -o /tmp/openxr-vendors.zip -d /tmp/openxr-vendors
+
+          ADDON_DIR="$(find /tmp/openxr-vendors -type d -path '*/addons/godotopenxrvendors' | head -n 1)"
+          test -n "$ADDON_DIR"
+          mkdir -p StereoViewer/addons
+          cp -a "$ADDON_DIR" StereoViewer/addons/
+          test -d StereoViewer/addons/godotopenxrvendors
+
+      - name: Android Gradle build template kur
+        shell: bash
+        run: |
+          rm -rf StereoViewer/android/build
+          mkdir -p StereoViewer/android/build
+          unzip -q -o \
+            "$HOME/.local/share/godot/export_templates/4.3.stable/android_source.zip" \
+            -d StereoViewer/android/build
+          test -f StereoViewer/android/build/build.gradle
+
+      - name: Debug imza anahtarini hazirla
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair \
+              -keystore "$HOME/.android/debug.keystore" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Godot Android editor ayarlarini yaz
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource format=3]
+
+          [resource]
+          export/android/android_sdk_path = "${ANDROID_SDK_ROOT}"
+          export/android/java_sdk_path = "${JAVA_HOME_17_X64}"
+          export/android/debug_keystore = "${HOME}/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
 
       - name: Tam Quest export presetini yaz
         shell: bash
         run: |
-          cat > StereoViewer/export_presets.cfg <<'EOF'
+          cat > StereoViewer/export_presets.cfg <<EOF
           [preset.0]
           name="Quest APK"
           platform="Android"
           runnable=true
-          advanced_options=true
+          advanced_options=false
           dedicated_server=false
           custom_features=""
           export_filter="all_resources"
@@ -74,7 +157,7 @@ jobs:
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
-          keystore/debug="/home/runner/.android/debug.keystore"
+          keystore/debug="${HOME}/.android/debug.keystore"
           keystore/debug_user="androiddebugkey"
           keystore/debug_password="android"
           permissions/read_external_storage=true
@@ -90,96 +173,32 @@ jobs:
           screen/support_large=true
           screen/support_xlarge=true
           EOF
-          grep -q 'package/signed=true' StereoViewer/export_presets.cfg
-          grep -q 'keystore/debug=' StereoViewer/export_presets.cfg
-          grep -q 'gradle_build/use_gradle_build=true' StereoViewer/export_presets.cfg
 
-      - name: Godot ve export template dosyalarini indir
-        id: godot_prepare
-        continue-on-error: true
-        uses: firebelley/godot-export@v6.0.0
-        with:
-          godot_executable_download_url: https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
-          godot_export_templates_download_url: https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz
-          relative_project_path: ./StereoViewer
-          archive_output: false
-          cache: true
-
-      - name: Godot ve Android yollarini bul
-        id: paths
+      - name: Projeyi ice aktar ve eklentiyi dogrula
         shell: bash
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
         run: |
-          GODOT_BIN="$(find "$HOME/.local/share/godot/godot_executable" -type f -name 'Godot*' -perm -111 | head -n 1)"
-          JAVA_SDK="${JAVA_HOME_17_X64:-$JAVA_HOME}"
-          ANDROID_SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          test -x "$GODOT_BIN"
-          test -d "$JAVA_SDK"
-          test -d "$ANDROID_SDK"
-          echo "godot_bin=$GODOT_BIN" >> "$GITHUB_OUTPUT"
-          echo "java_sdk=$JAVA_SDK" >> "$GITHUB_OUTPUT"
-          echo "android_sdk=$ANDROID_SDK" >> "$GITHUB_OUTPUT"
-
-      - name: Debug imza anahtarini hazirla
-        shell: bash
-        run: |
-          mkdir -p "$HOME/.android"
-          rm -f "$HOME/.android/debug.keystore"
-          keytool -genkeypair -v \
-            -keystore "$HOME/.android/debug.keystore" \
-            -storepass android \
-            -alias androiddebugkey \
-            -keypass android \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-          keytool -list \
-            -keystore "$HOME/.android/debug.keystore" \
-            -storepass android \
-            -alias androiddebugkey >/dev/null
-
-      - name: Godot Android editor ayarlarini yaz
-        shell: bash
-        run: |
-          mkdir -p "$HOME/.config/godot"
-          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
-          [gd_resource format=3]
-
-          [resource]
-          export/android/android_sdk_path = "${{ steps.paths.outputs.android_sdk }}"
-          export/android/java_sdk_path = "${{ steps.paths.outputs.java_sdk }}"
-          export/android/debug_keystore = "/home/runner/.android/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
-          EOF
-
-      - name: Android Gradle build template kur
-        shell: bash
-        run: |
-          TEMPLATE_ZIP="$(find "$HOME/.local/share/godot/export_templates" -type f -name android_source.zip | head -n 1)"
-          test -n "$TEMPLATE_ZIP"
-          rm -rf StereoViewer/android/build
-          mkdir -p StereoViewer/android/build
-          unzip -q -o "$TEMPLATE_ZIP" -d StereoViewer/android/build
-          test -f StereoViewer/android/build/build.gradle
+          GODOT="$HOME/godot-bin/Godot_v4.3-stable_linux.x86_64"
+          "$GODOT" --headless --editor --path StereoViewer --import --quit-after 20
+          test -d StereoViewer/addons/godotopenxrvendors
 
       - name: Quest APK olustur
         shell: bash
         env:
-          ANDROID_HOME: ${{ steps.paths.outputs.android_sdk }}
-          ANDROID_SDK_ROOT: ${{ steps.paths.outputs.android_sdk }}
-          JAVA_HOME: ${{ steps.paths.outputs.java_sdk }}
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/.android/debug.keystore
           GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
           GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
           mkdir -p StereoViewer/build
-          "${{ steps.paths.outputs.godot_bin }}" \
+          GODOT="$HOME/godot-bin/Godot_v4.3-stable_linux.x86_64"
+          "$GODOT" \
             --headless \
             --verbose \
             --path StereoViewer \
             --export-debug "Quest APK" \
-            "${{ github.workspace }}/StereoViewer/build/StereoViewer-Quest.apk"
+            "$GITHUB_WORKSPACE/StereoViewer/build/StereoViewer-Quest.apk"
           test -s StereoViewer/build/StereoViewer-Quest.apk
 
       - name: APK dosyasini yayinla
