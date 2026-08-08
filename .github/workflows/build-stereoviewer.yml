@@ -8,7 +8,6 @@ on:
 jobs:
   export:
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
 
@@ -33,11 +32,14 @@ jobs:
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0" \
-            "cmdline-tools;latest"
+            "cmdline-tools;latest" \
+            "cmake;3.10.2.4988404" \
+            "ndk;23.2.8568313"
 
       - name: Proje ZIP dosyasini ac
         shell: bash
         run: |
+          rm -rf StereoViewer
           unzip -o StereoViewer-Quest-v0.1.0-project.zip
           test -f StereoViewer/project.godot
           test -f StereoViewer/export_presets.cfg
@@ -48,6 +50,8 @@ jobs:
           sed -i 's|gradle_build/use_gradle_build=false|gradle_build/use_gradle_build=true|' StereoViewer/export_presets.cfg
           sed -i 's|package/signed=true|package/signed=false|' StereoViewer/export_presets.cfg
           grep -q 'gradle_build/use_gradle_build=true' StereoViewer/export_presets.cfg
+          grep -q 'architectures/arm64-v8a=true' StereoViewer/export_presets.cfg
+          grep -q 'xr_features/xr_mode=1' StereoViewer/export_presets.cfg
 
       - name: Godot ve export template dosyalarini indir
         id: godot_prepare
@@ -65,25 +69,36 @@ jobs:
         shell: bash
         run: |
           GODOT_BIN="$(find "$HOME/.local/share/godot/godot_executable" -type f -name 'Godot*' -perm -111 | head -n 1)"
-          if [ -z "$GODOT_BIN" ]; then
-            echo "Godot calistirilabilir dosyasi bulunamadi."
-            exit 1
-          fi
-
           JAVA_SDK="${JAVA_HOME_17_X64:-$JAVA_HOME}"
           ANDROID_SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          if [ -z "$JAVA_SDK" ] || [ ! -d "$JAVA_SDK" ]; then
-            echo "Java SDK yolu bulunamadi."
-            exit 1
-          fi
-          if [ -z "$ANDROID_SDK" ] || [ ! -d "$ANDROID_SDK" ]; then
-            echo "Android SDK yolu bulunamadi."
-            exit 1
-          fi
+
+          test -n "$GODOT_BIN"
+          test -x "$GODOT_BIN"
+          test -d "$JAVA_SDK"
+          test -d "$ANDROID_SDK"
 
           echo "godot_bin=$GODOT_BIN" >> "$GITHUB_OUTPUT"
           echo "java_sdk=$JAVA_SDK" >> "$GITHUB_OUTPUT"
           echo "android_sdk=$ANDROID_SDK" >> "$GITHUB_OUTPUT"
+
+      - name: Debug imza anahtarini hazirla
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.android"
+          rm -f "$HOME/.android/debug.keystore"
+          keytool -genkeypair -v \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          keytool -list \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey >/dev/null
 
       - name: Godot Android editor ayarlarini yaz
         shell: bash
@@ -95,33 +110,16 @@ jobs:
           [resource]
           export/android/android_sdk_path = "${{ steps.paths.outputs.android_sdk }}"
           export/android/java_sdk_path = "${{ steps.paths.outputs.java_sdk }}"
+          export/android/debug_keystore = "$HOME/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
           EOF
-
-      - name: Debug imza anahtarini hazirla
-        shell: bash
-        run: |
-          mkdir -p "$HOME/.android"
-          if [ ! -f "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair -v \
-              -keystore "$HOME/.android/debug.keystore" \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
 
       - name: Android Gradle build template kur
         shell: bash
         run: |
           TEMPLATE_ZIP="$(find "$HOME/.local/share/godot/export_templates" -type f -name android_source.zip | head -n 1)"
-          if [ -z "$TEMPLATE_ZIP" ]; then
-            echo "android_source.zip bulunamadi."
-            find "$HOME/.local/share/godot/export_templates" -maxdepth 4 -type f -print
-            exit 1
-          fi
+          test -n "$TEMPLATE_ZIP"
           rm -rf StereoViewer/android/build
           mkdir -p StereoViewer/android/build
           unzip -q -o "$TEMPLATE_ZIP" -d StereoViewer/android/build
@@ -133,6 +131,9 @@ jobs:
           ANDROID_HOME: ${{ steps.paths.outputs.android_sdk }}
           ANDROID_SDK_ROOT: ${{ steps.paths.outputs.android_sdk }}
           JAVA_HOME: ${{ steps.paths.outputs.java_sdk }}
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/.android/debug.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
           mkdir -p StereoViewer/build
           "${{ steps.paths.outputs.godot_bin }}" \
