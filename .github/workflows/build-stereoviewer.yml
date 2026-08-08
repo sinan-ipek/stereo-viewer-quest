@@ -8,16 +8,37 @@ on:
 jobs:
   export:
     runs-on: ubuntu-latest
+
     permissions:
-      contents: write
+      contents: read
+
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
 
+      - name: Java 17 kur
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android araclarini kur
+        uses: android-actions/setup-android@v3
+
       - name: Proje ZIP dosyasini ac
         run: unzip -o StereoViewer-Quest-v0.1.0-project.zip
 
-      - name: Godot ile Quest APK olustur
+      - name: Gradle Build ayarini etkinlestir
+        run: |
+          sed -i 's/gradle_build\/use_gradle_build=false/gradle_build\/use_gradle_build=true/' StereoViewer/export_presets.cfg
+          grep 'gradle_build/use_gradle_build=true' StereoViewer/export_presets.cfg
+
+      # Bu adim Godot'u ve Android export template dosyalarini indirir.
+      # Android build template henuz kurulmadigi icin ilk export denemesi
+      # hata verebilir; sonraki adimda template otomatik kurulacaktir.
+      - name: Godot ve export template dosyalarini hazirla
+        id: godot_prepare
+        continue-on-error: true
         uses: firebelley/godot-export@v6.0.0
         with:
           godot_executable_download_url: https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
@@ -26,9 +47,41 @@ jobs:
           archive_output: false
           cache: true
 
+      - name: Godot konumunu bul
+        id: godot
+        shell: bash
+        run: |
+          GODOT_BIN="$(find "$HOME/.local/share/godot/godot_executable" -type f -name 'Godot*' -perm -111 | head -n 1)"
+          if [ -z "$GODOT_BIN" ]; then
+            echo "Godot calistirilabilir dosyasi bulunamadi."
+            exit 1
+          fi
+          echo "bin=$GODOT_BIN" >> "$GITHUB_OUTPUT"
+
+      - name: Android Gradle build template kur
+        run: |
+          "${{ steps.godot.outputs.bin }}" \
+            --headless \
+            --path StereoViewer \
+            --editor \
+            --quit \
+            --install-android-build-template
+          test -f StereoViewer/android/build/build.gradle
+
+      - name: Quest APK olustur
+        run: |
+          mkdir -p StereoViewer/build
+          "${{ steps.godot.outputs.bin }}" \
+            --headless \
+            --path StereoViewer \
+            --export-release "Quest APK" \
+            "${{ github.workspace }}/StereoViewer/build/StereoViewer-Quest.apk"
+          test -f StereoViewer/build/StereoViewer-Quest.apk
+
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
           name: StereoViewer-Quest-v0.1.0-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
+          retention-days: 30
