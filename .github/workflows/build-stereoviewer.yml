@@ -59,13 +59,17 @@ jobs:
           echo "bin=$GODOT_BIN" >> "$GITHUB_OUTPUT"
 
       - name: Android Gradle build template kur
+        shell: bash
         run: |
-          "${{ steps.godot.outputs.bin }}" \
-            --headless \
-            --path StereoViewer \
-            --editor \
-            --quit \
-            --install-android-build-template
+          TEMPLATE_ZIP="$(find "$HOME/.local/share/godot/export_templates" -type f -name android_source.zip | head -n 1)"
+          if [ -z "$TEMPLATE_ZIP" ]; then
+            echo "android_source.zip bulunamadi."
+            find "$HOME/.local/share/godot" -maxdepth 4 -type f -print
+            exit 1
+          fi
+          rm -rf StereoViewer/android/build
+          mkdir -p StereoViewer/android/build
+          unzip -q -o "$TEMPLATE_ZIP" -d StereoViewer/android/build
           test -f StereoViewer/android/build/build.gradle
 
       - name: Quest APK olustur
