@@ -542,14 +542,38 @@ jobs:
           grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' \
             StereoViewer/build/signature.txt
 
-          unzip -l "$APK" > StereoViewer/build/apk-contents.txt
-          grep -Eiq 'lib/arm64-v8a/.*(openxr|godotopenxrmeta).*\.so' \
-            StereoViewer/build/apk-contents.txt
-
           "$AAPT" dump xmltree "$APK" AndroidManifest.xml \
             > StereoViewer/build/manifest.txt
-          grep -q 'com.oculus.intent.category.VR' StereoViewer/build/manifest.txt
-          grep -q 'StereoViewer' StereoViewer/build/manifest.txt
+          "$AAPT" dump badging "$APK" \
+            > StereoViewer/build/badging.txt
+
+          require_text() {
+            local pattern="$1"
+            local file="$2"
+            local description="$3"
+            if ! grep -Fq "$pattern" "$file"; then
+              echo "HATA: $description bulunamadi."
+              echo "Aranan ifade: $pattern"
+              echo "Denetlenen dosya: $file"
+              exit 1
+            fi
+            echo "TAMAM: $description"
+          }
+
+          require_text \
+            'com.oculus.intent.category.VR' \
+            StereoViewer/build/manifest.txt \
+            'Quest VR uygulama kategorisi'
+          require_text \
+            "package: name='com.stereoguide.viewer'" \
+            StereoViewer/build/badging.txt \
+            'dogru Android paket adi'
+          require_text \
+            "application-label:'StereoViewer'" \
+            StereoViewer/build/badging.txt \
+            'StereoViewer uygulama adi'
+
+          echo "APK imzasi, paket adi ve Quest VR tanimi basariyla dogrulandi."
 
       - name: Hata gunlugunu yayinla
         if: failure()
@@ -560,6 +584,7 @@ jobs:
             StereoViewer/build/export.log
             StereoViewer/build/signature.txt
             StereoViewer/build/manifest.txt
+            StereoViewer/build/badging.txt
           if-no-files-found: warn
           retention-days: 7
 
