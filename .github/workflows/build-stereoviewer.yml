@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.5.3 grip ile yatay tasima kaynaklarini yaz
+      - name: StereoViewer v0.5.4 grip ile yatay ve dikey tasima kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.5.3"
+          config/version="0.5.4"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -196,7 +196,7 @@ jobs:
           pixel_size = 0.0025
           font_size = 27
           outline_size = 6
-          text = "v0.5.3 - build 26\n\nQuest fotoğraflarınızı açmaya hazır."
+          text = "v0.5.4 - build 27\n\nQuest fotoğraflarınızı açmaya hazır."
 
           [node name="Help" type="Label3D" parent="XROrigin3D/Display/InfoPanel"]
           position = Vector3(0, -0.55, 0)
@@ -298,8 +298,8 @@ jobs:
           [node name="FallbackCamera" type="Camera3D" parent="."]
           current = false
           EOF
-          # v0.5.3, calisan stereo, galeri ve Quest Touch temelini korur.
-          # Sag grip basili tutulurken fotograf penceresi yalnizca yatay tasinir.
+          # v0.5.4, calisan stereo, galeri ve Quest Touch temelini korur.
+          # Sag grip basili tutulurken fotograf penceresi yatay ve dikey tasinir.
           # Quest'in Pictures, DCIM ve Download klasorleri arka planda taranir.
           cat > StereoViewer/viewer.gd <<'EOF'
           extends Node3D
@@ -311,7 +311,7 @@ jobs:
               PHOTO
           }
 
-          const BUILD_TEXT := "v0.5.3 - build 26"
+          const BUILD_TEXT := "v0.5.4 - build 27"
           const PERMISSION_IMAGES := "android.permission.READ_MEDIA_IMAGES"
           const PERMISSION_VISUAL_SELECTED := "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
           const PERMISSION_LEGACY := "android.permission.READ_EXTERNAL_STORAGE"
@@ -321,6 +321,7 @@ jobs:
           const GRIP_PRESS_THRESHOLD := 0.55
           const GRIP_RELEASE_THRESHOLD := 0.35
           const MAX_HORIZONTAL_OFFSET := 1.50
+          const MAX_VERTICAL_OFFSET := 1.25
           const STICK_TRIGGER := 0.62
           const STICK_RELEASE := 0.24
           const PHOTO_HEIGHT := 1.80
@@ -350,10 +351,12 @@ jobs:
           var current_index := 0
           var viewing_distance := 2.10
           var horizontal_offset := 0.0
+          var vertical_offset := 0.0
           var grip_dragging := false
           var grip_start_controller_position := Vector3.ZERO
-          var grip_start_display_offset := 0.0
-          var grip_drag_axis := Vector3.RIGHT
+          var grip_start_display_offset := Vector2.ZERO
+          var grip_drag_horizontal_axis := Vector3.RIGHT
+          var grip_drag_vertical_axis := Vector3.UP
           var swap_eyes := false
           var horizontal_latched := false
           var library_scanned := false
@@ -442,7 +445,11 @@ jobs:
               update_display_distance()
 
           func update_display_distance() -> void:
-              display.position = Vector3(horizontal_offset, 0.0, -viewing_distance)
+              display.position = Vector3(
+                  horizontal_offset,
+                  vertical_offset,
+                  -viewing_distance
+              )
 
           func _on_right_button_pressed(action_name: StringName) -> void:
               match action_name:
@@ -510,8 +517,16 @@ jobs:
                   if grip_value >= GRIP_PRESS_THRESHOLD:
                       grip_dragging = true
                       grip_start_controller_position = controller_position
-                      grip_start_display_offset = horizontal_offset
-                      grip_drag_axis = xr_camera.global_transform.basis.x.normalized()
+                      grip_start_display_offset = Vector2(
+                          horizontal_offset,
+                          vertical_offset
+                      )
+                      grip_drag_horizontal_axis = (
+                          xr_camera.global_transform.basis.x.normalized()
+                      )
+                      grip_drag_vertical_axis = (
+                          xr_camera.global_transform.basis.y.normalized()
+                      )
                   return
 
               if grip_value <= GRIP_RELEASE_THRESHOLD:
@@ -522,9 +537,16 @@ jobs:
                   controller_position - grip_start_controller_position
               )
               horizontal_offset = clampf(
-                  grip_start_display_offset + controller_delta.dot(grip_drag_axis),
+                  grip_start_display_offset.x
+                  + controller_delta.dot(grip_drag_horizontal_axis),
                   -MAX_HORIZONTAL_OFFSET,
                   MAX_HORIZONTAL_OFFSET
+              )
+              vertical_offset = clampf(
+                  grip_start_display_offset.y
+                  + controller_delta.dot(grip_drag_vertical_axis),
+                  -MAX_VERTICAL_OFFSET,
+                  MAX_VERTICAL_OFFSET
               )
               update_display_distance()
 
@@ -910,7 +932,7 @@ jobs:
             exit 1
           fi
           grep -Fq 'res://viewer.gd' StereoViewer/Main.tscn
-          grep -Fq 'v0.5.3 - build 26' StereoViewer/viewer.gd
+          grep -Fq 'v0.5.4 - build 27' StereoViewer/viewer.gd
           grep -Fq 'OS.request_permission(permission)' StereoViewer/viewer.gd
           grep -Fq 'OS.SYSTEM_DIR_PICTURES' StereoViewer/viewer.gd
           grep -Fq 'OS.SYSTEM_DIR_DCIM' StereoViewer/viewer.gd
@@ -921,7 +943,8 @@ jobs:
           grep -Fq 'ViewMode.PHOTO' StereoViewer/viewer.gd
           grep -Fq 'swap_eyes = not swap_eyes' StereoViewer/viewer.gd
           grep -Fq 'right_controller.get_float(&"grip")' StereoViewer/viewer.gd
-          grep -Fq 'controller_delta.dot(grip_drag_axis)' StereoViewer/viewer.gd
+          grep -Fq 'controller_delta.dot(grip_drag_horizontal_axis)' StereoViewer/viewer.gd
+          grep -Fq 'controller_delta.dot(grip_drag_vertical_axis)' StereoViewer/viewer.gd
           grep -Fq '/user/hand/right/input/squeeze/value' \
             StereoViewer/openxr_action_map.tres
           grep -Fq 'interaction_profiles/oculus/touch_controller' \
@@ -1019,8 +1042,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=26
-          version/name="0.5.3"
+          version/code=27
+          version/name="0.5.4"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -1134,13 +1157,13 @@ jobs:
             StereoViewer/build/badging.txt \
             'StereoViewer uygulama adi'
           require_text \
-            "versionCode='26'" \
+            "versionCode='27'" \
             StereoViewer/build/badging.txt \
-            'v0.5.3 Android surum kodu'
+            'v0.5.4 Android surum kodu'
           require_text \
-            "versionName='0.5.3'" \
+            "versionName='0.5.4'" \
             StereoViewer/build/badging.txt \
-            'v0.5.3 Android surum adi'
+            'v0.5.4 Android surum adi'
           require_text \
             "com.oculus.intent.category.VR" \
             StereoViewer/build/manifest.txt \
@@ -1197,7 +1220,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.5.3-APK
+          name: StereoViewer-Quest-v0.5.4-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
