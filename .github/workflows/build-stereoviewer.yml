@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.4.5 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.4.6 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.4.5"
+          config/version="0.4.6"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -650,13 +650,16 @@ jobs:
                   swap_stereo_eyes()
           EOF
 
-          # v0.4.5: Tek-fotograf secicisi. Android secicisinden donuste
-          # Activity otomatik yenilenir; secilen URI user:// icinde korunur.
+          # v0.4.6: Tek-fotograf secicisi. Android secicisinden donuste eski
+          # XR oturumu kontrollu kapatilir, sonra Activity bir kez yenilenir.
           cat > StereoViewer/main.gd <<'EOF'
           extends Node3D
 
           const XR_RENDER_SCALE := 1.25
           const BUTTON_COOLDOWN_MS := 350
+          const XR_SHUTDOWN_FRAMES := 8
+          const XR_STARTUP_FRAMES := 12
+          const CONTROLLER_STABLE_FRAMES := 12
           const STICK_DEADZONE := 0.28
           const HORIZONTAL_TRIGGER := 0.72
           const HORIZONTAL_RELEASE := 0.30
@@ -704,20 +707,30 @@ jobs:
           var b_was_down := false
           var controls_armed := false
           var horizontal_latched := false
+          var xr_ready := false
+          var controller_ready_frames := 0
+          var transition_running := false
 
           func _ready() -> void:
               process_mode = Node.PROCESS_MODE_ALWAYS
               set_process(true)
-              start_xr()
-              await get_tree().process_frame
-              await get_tree().process_frame
+              controls_armed = false
+              xr_ready = false
+              await start_clean_xr_session()
               recenter_display()
               if not load_pending_photo():
                   show_welcome()
 
-          func start_xr() -> void:
+          func start_clean_xr_session() -> void:
               var xr := XRServer.find_interface("OpenXR")
-              if xr != null and not xr.is_initialized():
+              # Activity yeniden olusturuldugunda ayni Android surecinde kalir.
+              # Eski oturum yarim acik kalmissa onu kullanmak yerine daima temizle.
+              get_viewport().use_xr = false
+              if xr != null and xr.is_initialized():
+                  xr.uninitialize()
+                  for frame in range(XR_SHUTDOWN_FRAMES):
+                      await get_tree().process_frame
+              if xr != null:
                   xr.render_target_size_multiplier = XR_RENDER_SCALE
                   xr.initialize()
               if xr == null or not xr.is_initialized():
@@ -727,6 +740,9 @@ jobs:
                   return
               get_viewport().use_xr = true
               DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+              for frame in range(XR_STARTUP_FRAMES):
+                  await get_tree().process_frame
+              xr_ready = true
 
           func show_welcome() -> void:
               photo.visible = false
@@ -735,7 +751,7 @@ jobs:
               help.text = "A: Fotoğraf tarayıcısını aç"
 
           func open_photo_picker() -> void:
-              if picker_open:
+              if picker_open or transition_running or not xr_ready:
                   return
               if not DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
                   show_error("Sistem fotoğraf tarayıcısı açılamadı.")
@@ -781,12 +797,21 @@ jobs:
               # koruyup Android Activity'yi otomatik yeniden oluşturmak temiz
               # bir OpenXR oturumu kurar; kullanıcı uygulamayı kapatıp açmaz.
               if android_runtime != null:
+                  transition_running = true
+                  xr_ready = false
                   info_panel.visible = true
                   photo.visible = false
                   message.text = "Fotoğraf açılıyor..."
                   help.text = ""
-                  await get_tree().process_frame
-                  await get_tree().process_frame
+                  # Sistem secicisi donuste Quest'in OpenXR girdisini dondurur.
+                  # Activity'yi eski oturum acikken yenilemek iki oturumun
+                  # cakismasina yol aciyordu. Once render ve XR tamamen kapanir.
+                  get_viewport().use_xr = false
+                  var xr := XRServer.find_interface("OpenXR")
+                  if xr != null and xr.is_initialized():
+                      xr.uninitialize()
+                  for frame in range(XR_SHUTDOWN_FRAMES):
+                      await get_tree().process_frame
                   var activity = android_runtime.getActivity()
                   var refresh_callable := func():
                       activity.recreate()
@@ -947,8 +972,23 @@ jobs:
               display.look_at(camera_transform.origin, Vector3.UP, true)
 
           func _process(delta: float) -> void:
+              if transition_running or not xr_ready:
+                  return
+              var tracker := XRServer.get_tracker(&"right_hand")
+              if tracker == null:
+                  controller_ready_frames = 0
+                  controls_armed = false
+                  return
               var a_down := controller_button_down(A_BUTTON_NAMES)
               var b_down := controller_button_down(B_BUTTON_NAMES)
+              if controller_ready_frames < CONTROLLER_STABLE_FRAMES:
+                  if a_down or b_down:
+                      controller_ready_frames = 0
+                  else:
+                      controller_ready_frames += 1
+                  a_was_down = a_down
+                  b_was_down = b_down
+                  return
               if not controls_armed:
                   if not a_down and not b_down:
                       controls_armed = true
@@ -1116,8 +1156,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=18
-          version/name="0.4.5"
+          version/code=19
+          version/name="0.4.6"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -1277,7 +1317,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.4.5-APK
+          name: StereoViewer-Quest-v0.4.6-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
