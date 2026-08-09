@@ -424,12 +424,18 @@ jobs:
           touch StereoViewer/android/.gdignore
           test -f StereoViewer/android/build/build.gradle
 
-      - name: Kalici uygulama imzasini dogrula
+      - name: Kalici uygulama imzasini yaz ve dogrula
         shell: bash
         run: |
-          test -s StereoGuide/stereoguide-release.jks
+          mkdir -p StereoViewer/signing
+          cat > /tmp/stereoviewer-keystore.b64 <<'EOF'
+          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
+          EOF
+          base64 --decode /tmp/stereoviewer-keystore.b64 \
+            > StereoViewer/signing/stereoviewer-release.jks
+          test -s StereoViewer/signing/stereoviewer-release.jks
           keytool -list \
-            -keystore StereoGuide/stereoguide-release.jks \
+            -keystore StereoViewer/signing/stereoviewer-release.jks \
             -storepass StereoGuide2026 \
             -alias stereoguide >/dev/null
 
@@ -448,7 +454,7 @@ jobs:
       - name: Tam Quest export presetini yaz
         shell: bash
         run: |
-          KEYSTORE_PATH="$GITHUB_WORKSPACE/StereoGuide/stereoguide-release.jks"
+          KEYSTORE_PATH="$GITHUB_WORKSPACE/StereoViewer/signing/stereoviewer-release.jks"
           cat > StereoViewer/export_presets.cfg <<EOF
           [preset.0]
           name="Quest APK"
