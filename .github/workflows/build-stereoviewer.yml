@@ -42,7 +42,7 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.3.1 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.3.2 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
@@ -480,8 +480,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=4
-          version/name="0.3.1"
+          version/code=5
+          version/name="0.3.2"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -596,13 +596,29 @@ jobs:
             StereoViewer/build/manifest.txt \
             'Quest VR uygulama kategorisi'
 
-          if ! unzip -p "$APK" 'classes*.dex' \
-            | strings \
-            | grep -Fq 'GodotOpenXRMeta'; then
-            echo "HATA: Meta/OpenXR yukleyicisi APK icinde bulunamadi."
+          require_text \
+            "org.godotengine.plugin.v2.GodotOpenXR" \
+            StereoViewer/build/manifest.txt \
+            'Godot Meta OpenXR eklenti kaydi'
+
+          unzip -Z1 "$APK" > StereoViewer/build/apk-files.txt
+          if ! grep -Fxq 'lib/arm64-v8a/libopenxr_loader.so' \
+            StereoViewer/build/apk-files.txt; then
+            echo "HATA: ARM64 OpenXR yukleyici kutuphanesi APK icinde bulunamadi."
+            grep -E '(^|/)(libopenxr|libgodotopenxr)' \
+              StereoViewer/build/apk-files.txt || true
             exit 1
           fi
-          echo "TAMAM: Meta/OpenXR yukleyicisi APK icinde bulundu."
+          echo "TAMAM: ARM64 OpenXR yukleyici kutuphanesi APK icinde bulundu."
+
+          unzip -p "$APK" 'classes*.dex' \
+            | strings > StereoViewer/build/dex-strings.txt
+          if ! grep -Fq 'org/godotengine/openxr/vendors/GodotOpenXR' \
+            StereoViewer/build/dex-strings.txt; then
+            echo "HATA: Godot Meta OpenXR Java eklentisi APK icinde bulunamadi."
+            exit 1
+          fi
+          echo "TAMAM: Godot Meta OpenXR Java eklentisi APK icinde bulundu."
 
           echo "APK imzasi, Quest VR yapisi, paket adi ve uygulama adi basariyla dogrulandi."
 
@@ -616,13 +632,14 @@ jobs:
             StereoViewer/build/signature.txt
             StereoViewer/build/manifest.txt
             StereoViewer/build/badging.txt
+            StereoViewer/build/apk-files.txt
           if-no-files-found: warn
           retention-days: 7
 
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.3.1-APK
+          name: StereoViewer-Quest-v0.3.2-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
