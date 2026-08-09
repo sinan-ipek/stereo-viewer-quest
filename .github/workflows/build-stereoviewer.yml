@@ -42,17 +42,17 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.3.3 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.3.4 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.3.3"
+          config/version="0.3.4"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
-          config/features=PackedStringArray("4.4", "GL Compatibility")
+          config/features=PackedStringArray("4.6", "GL Compatibility")
 
           [display]
           window/size/viewport_width=1832
@@ -219,6 +219,7 @@ jobs:
           var picker_open := false
           var picker_request_id := 0
           var application_was_paused := false
+          var a_button_was_down := false
 
           func _ready() -> void:
               start_xr()
@@ -275,6 +276,7 @@ jobs:
                   show_error("Fotoğraf seçici başlatılamadı.")
 
           func _on_photo_selected(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
+              # Callback hangi sonuçla dönerse dönsün A kilidini ilk iş kaldır.
               picker_open = false
               application_was_paused = false
               if not status or paths.is_empty():
@@ -284,6 +286,12 @@ jobs:
               load_photo_from_uri(paths[0])
 
           func load_photo_from_uri(uri: String) -> void:
+              # Godot 4.6 Android SAF: seçicinin verdiği content:// URI iznini
+              # koru ve URI'yi doğrudan FileAccess ile aç.
+              var android_runtime := Engine.get_singleton("AndroidRuntime")
+              if android_runtime != null and uri.begins_with("content://"):
+                  android_runtime.updatePersistableUriPermission(uri, true)
+
               var file := FileAccess.open(uri, FileAccess.READ)
               if file == null:
                   show_error("Seçilen fotoğraf açılamadı.\nA ile başka bir fotoğraf seçebilirsiniz.")
@@ -370,6 +378,13 @@ jobs:
               display.look_at(camera_transform.origin, Vector3.UP, true)
 
           func _process(delta: float) -> void:
+              # Sinyal Android/Quest odağa dönüşünde kaçsa bile A düğmesini
+              # her kare kenar-tetiklemeli olarak denetle.
+              var a_button_down := right_controller.is_button_pressed("ax_button")
+              if a_button_down and not a_button_was_down and not picker_open:
+                  open_photo_picker()
+              a_button_was_down = a_button_down
+
               if current_texture == null or picker_open:
                   return
               var stick := right_controller.get_vector2("primary")
@@ -410,26 +425,26 @@ jobs:
           test -s StereoViewer/main.gd
           test -s StereoViewer/stereo.gdshader
 
-      - name: Godot 4.4.1 ve Android export template dosyalarini kur
+      - name: Godot 4.6 ve Android export template dosyalarini kur
         shell: bash
         run: |
           mkdir -p "$HOME/godot-bin"
           curl -fL --retry 3 \
             -o /tmp/godot.zip \
-            https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_linux.x86_64.zip
+            https://github.com/godotengine/godot/releases/download/4.6-stable/Godot_v4.6-stable_linux.x86_64.zip
           unzip -q -o /tmp/godot.zip -d "$HOME/godot-bin"
-          chmod +x "$HOME/godot-bin/Godot_v4.4.1-stable_linux.x86_64"
+          chmod +x "$HOME/godot-bin/Godot_v4.6-stable_linux.x86_64"
 
           curl -fL --retry 3 \
             -o /tmp/templates.tpz \
-            https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_export_templates.tpz
-          mkdir -p "$HOME/.local/share/godot/export_templates/4.4.1.stable"
+            https://github.com/godotengine/godot/releases/download/4.6-stable/Godot_v4.6-stable_export_templates.tpz
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.6.stable"
           rm -rf /tmp/godot-templates
           mkdir -p /tmp/godot-templates
           unzip -q -o /tmp/templates.tpz -d /tmp/godot-templates
           cp -a /tmp/godot-templates/templates/. \
-            "$HOME/.local/share/godot/export_templates/4.4.1.stable/"
-          test -f "$HOME/.local/share/godot/export_templates/4.4.1.stable/android_source.zip"
+            "$HOME/.local/share/godot/export_templates/4.6.stable/"
+          test -f "$HOME/.local/share/godot/export_templates/4.6.stable/android_source.zip"
 
       - name: Quest OpenXR Vendors eklentisini kur
         shell: bash
@@ -454,9 +469,9 @@ jobs:
         run: |
           mkdir -p StereoViewer/android/build
           unzip -q -o \
-            "$HOME/.local/share/godot/export_templates/4.4.1.stable/android_source.zip" \
+            "$HOME/.local/share/godot/export_templates/4.6.stable/android_source.zip" \
             -d StereoViewer/android/build
-          printf '4.4.1.stable\n' > StereoViewer/android/.build_version
+          printf '4.6.stable\n' > StereoViewer/android/.build_version
           touch StereoViewer/android/.gdignore
           test -f StereoViewer/android/build/build.gradle
 
@@ -514,8 +529,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=6
-          version/name="0.3.3"
+          version/code=7
+          version/name="0.3.4"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -564,7 +579,7 @@ jobs:
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
         run: |
-          GODOT="$HOME/godot-bin/Godot_v4.4.1-stable_linux.x86_64"
+          GODOT="$HOME/godot-bin/Godot_v4.6-stable_linux.x86_64"
           "$GODOT" --headless --editor --path StereoViewer --import --quit-after 25
           test -f StereoViewer/addons/godotopenxrvendors/plugin.gdextension
           test -f StereoViewer/addons/godotopenxrvendors/.bin/android/debug/godotopenxr-meta-debug.aar
@@ -576,7 +591,7 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           set -o pipefail
-          GODOT="$HOME/godot-bin/Godot_v4.4.1-stable_linux.x86_64"
+          GODOT="$HOME/godot-bin/Godot_v4.6-stable_linux.x86_64"
           "$GODOT" \
             --headless \
             --verbose \
@@ -673,7 +688,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.3.3-APK
+          name: StereoViewer-Quest-v0.3.4-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
