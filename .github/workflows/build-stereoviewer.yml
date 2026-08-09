@@ -43,6 +43,294 @@ jobs:
           unzip -q -o StereoViewer-Quest-v0.1.0-project.zip
           test -f StereoViewer/project.godot
 
+      - name: StereoViewer v0.2.0 tam proje kaynaklarini yaz
+        shell: bash
+        run: |
+          cat > StereoViewer/project.godot <<'EOF'
+          [application]
+          config/name="StereoViewer"
+          config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
+          run/main_scene="res://Main.tscn"
+          config/features=PackedStringArray("4.3", "GL Compatibility")
+
+          [display]
+          window/size/viewport_width=1832
+          window/size/viewport_height=1920
+          window/handheld/orientation=0
+
+          [rendering]
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          textures/default_filters/use_nearest_mipmap_filter=false
+          textures/vram_compression/import_etc2_astc=true
+          xr/openxr/enabled=true
+
+          [xr]
+          openxr/enabled=true
+          EOF
+
+          cat > StereoViewer/stereo.gdshader <<'EOF'
+          shader_type spatial;
+          render_mode unshaded, cull_disabled;
+
+          uniform sampler2D stereo_photo : source_color;
+          uniform bool swap_eyes = false;
+
+          void fragment() {
+              float eye = float(VIEW_INDEX);
+              if (swap_eyes) {
+                  eye = 1.0 - eye;
+              }
+              vec2 stereo_uv = vec2(UV.x * 0.5 + eye * 0.5, UV.y);
+              ALBEDO = texture(stereo_photo, stereo_uv).rgb;
+          }
+          EOF
+
+          cat > StereoViewer/Main.tscn <<'EOF'
+          [gd_scene load_steps=7 format=3]
+
+          [ext_resource path="res://main.gd" type="Script" id="1"]
+          [ext_resource path="res://stereo.gdshader" type="Shader" id="2"]
+
+          [sub_resource type="ShaderMaterial" id="StereoMaterial"]
+          shader = ExtResource("2")
+
+          [sub_resource type="QuadMesh" id="PhotoMesh"]
+          material = SubResource("StereoMaterial")
+          size = Vector2(3.2, 1.8)
+
+          [sub_resource type="StandardMaterial3D" id="PanelMaterial"]
+          shading_mode = 0
+          albedo_color = Color(0.035, 0.055, 0.11, 0.97)
+
+          [sub_resource type="QuadMesh" id="PanelMesh"]
+          material = SubResource("PanelMaterial")
+          size = Vector2(3.25, 1.85)
+
+          [sub_resource type="StandardMaterial3D" id="FloorMaterial"]
+          albedo_color = Color(0.018, 0.023, 0.04, 1)
+          roughness = 1.0
+
+          [node name="Main" type="Node3D"]
+          script = ExtResource("1")
+
+          [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+
+          [node name="XROrigin3D" type="XROrigin3D" parent="."]
+
+          [node name="XRCamera3D" type="XRCamera3D" parent="XROrigin3D"]
+
+          [node name="Photo" type="MeshInstance3D" parent="XROrigin3D/XRCamera3D"]
+          visible = false
+          position = Vector3(0, 0, -2.2)
+          mesh = SubResource("PhotoMesh")
+
+          [node name="InfoPanel" type="Node3D" parent="XROrigin3D/XRCamera3D"]
+          position = Vector3(0, 0, -2.18)
+
+          [node name="Background" type="MeshInstance3D" parent="XROrigin3D/XRCamera3D/InfoPanel"]
+          mesh = SubResource("PanelMesh")
+
+          [node name="Title" type="Label3D" parent="XROrigin3D/XRCamera3D/InfoPanel"]
+          position = Vector3(0, 0.48, 0.02)
+          font_size = 64
+          outline_size = 10
+          text = "StereoViewer"
+
+          [node name="Message" type="Label3D" parent="XROrigin3D/XRCamera3D/InfoPanel"]
+          position = Vector3(0, 0.08, 0.02)
+          width = 1000.0
+          font_size = 34
+          outline_size = 8
+          text = "Quest galerisi taraniyor..."
+
+          [node name="Help" type="Label3D" parent="XROrigin3D/XRCamera3D/InfoPanel"]
+          position = Vector3(0, -0.53, 0.02)
+          width = 1200.0
+          font_size = 25
+          outline_size = 7
+          modulate = Color(0.62, 0.82, 1, 1)
+          text = "A: yeniden tara   |   Sol cubuk: onceki/sonraki"
+
+          [node name="PhotoStatus" type="Label3D" parent="XROrigin3D/XRCamera3D"]
+          visible = false
+          position = Vector3(0, -1.03, -2.15)
+          width = 1450.0
+          font_size = 25
+          outline_size = 8
+
+          [node name="LeftController" type="XRController3D" parent="XROrigin3D"]
+          tracker = &"left_hand"
+
+          [node name="RightController" type="XRController3D" parent="XROrigin3D"]
+          tracker = &"right_hand"
+
+          [node name="FallbackCamera" type="Camera3D" parent="."]
+          current = false
+          EOF
+
+          cat > StereoViewer/main.gd <<'EOF'
+          extends Node3D
+
+          @onready var photo: MeshInstance3D = $XROrigin3D/XRCamera3D/Photo
+          @onready var info_panel: Node3D = $XROrigin3D/XRCamera3D/InfoPanel
+          @onready var message: Label3D = $XROrigin3D/XRCamera3D/InfoPanel/Message
+          @onready var help: Label3D = $XROrigin3D/XRCamera3D/InfoPanel/Help
+          @onready var photo_status: Label3D = $XROrigin3D/XRCamera3D/PhotoStatus
+          @onready var left_controller: XRController3D = $XROrigin3D/LeftController
+          @onready var right_controller: XRController3D = $XROrigin3D/RightController
+
+          var files: Array[String] = []
+          var current_index := 0
+          var swapped := false
+          var display_scale := 1.0
+          var stick_ready := true
+
+          func _ready() -> void:
+              start_xr()
+              connect_controllers()
+              request_storage_permission()
+              message.text = "Quest galerisi taraniyor..."
+              await get_tree().create_timer(1.2).timeout
+              scan_photos()
+
+          func start_xr() -> void:
+              var xr := XRServer.find_interface("OpenXR")
+              if xr == null or not xr.is_initialized():
+                  $FallbackCamera.current = true
+                  message.text = "OpenXR baslatilamadi."
+                  return
+              get_viewport().use_xr = true
+              DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+
+          func connect_controllers() -> void:
+              left_controller.button_pressed.connect(_on_button_pressed)
+              right_controller.button_pressed.connect(_on_button_pressed)
+
+          func request_storage_permission() -> void:
+              if OS.get_name() == "Android":
+                  OS.request_permissions()
+
+          func scan_photos() -> void:
+              files.clear()
+              var roots: Array[String] = [
+                  "/storage/emulated/0/Pictures/StereoGuide",
+                  "/storage/emulated/0/Pictures",
+                  "/storage/emulated/0/DCIM/StereoGuide",
+                  "/storage/emulated/0/DCIM",
+                  "/sdcard/Pictures/StereoGuide",
+                  "/sdcard/Pictures",
+                  "/sdcard/DCIM/StereoGuide",
+                  "/sdcard/DCIM"
+              ]
+              for root in roots:
+                  collect_images(root)
+              files.sort()
+              if files.is_empty():
+                  show_empty_state()
+              else:
+                  current_index = files.size() - 1
+                  show_current()
+
+          func collect_images(path: String) -> void:
+              var dir := DirAccess.open(path)
+              if dir == null:
+                  return
+              dir.list_dir_begin()
+              var file_name := dir.get_next()
+              while file_name != "":
+                  if not dir.current_is_dir():
+                      var extension := file_name.get_extension().to_lower()
+                      var full_path := path.path_join(file_name)
+                      if extension in ["jpg", "jpeg", "png", "webp"] and not files.has(full_path):
+                          files.append(full_path)
+                  file_name = dir.get_next()
+              dir.list_dir_end()
+
+          func show_empty_state() -> void:
+              photo.visible = false
+              photo_status.visible = false
+              info_panel.visible = true
+              message.text = "SBS fotograf bulunamadi.\n\nTelefon uygulamasiyla cekilen yan yana fotografi\nQuest'in Pictures/StereoGuide klasorune kopyalayin."
+              help.text = "A: yeniden tara"
+
+          func show_current() -> void:
+              if files.is_empty():
+                  show_empty_state()
+                  return
+              var image := Image.new()
+              var error := image.load(files[current_index])
+              if error != OK:
+                  info_panel.visible = true
+                  photo.visible = false
+                  message.text = "Fotograf acilamadi:\n" + files[current_index].get_file()
+                  help.text = "A: yeniden tara   |   Sol cubuk: baska fotograf"
+                  return
+              var texture := ImageTexture.create_from_image(image)
+              var material := photo.get_active_material(0) as ShaderMaterial
+              material.set_shader_parameter("stereo_photo", texture)
+              material.set_shader_parameter("swap_eyes", swapped)
+              var half_ratio := (float(image.get_width()) * 0.5) / float(image.get_height())
+              photo.scale = Vector3((half_ratio / (16.0 / 9.0)) * display_scale, display_scale, 1.0)
+              info_panel.visible = false
+              photo.visible = true
+              photo_status.visible = true
+              photo_status.text = "%d/%d  %s\nSol cubuk: fotograf  |  A: gozleri degistir  |  Sag cubuk: boyut" % [current_index + 1, files.size(), files[current_index].get_file()]
+
+          func _process(_delta: float) -> void:
+              var navigation := left_controller.get_vector2("primary")
+              var sizing := right_controller.get_vector2("primary")
+              if stick_ready and navigation.x > 0.65:
+                  next_photo(1)
+                  stick_ready = false
+              elif stick_ready and navigation.x < -0.65:
+                  next_photo(-1)
+                  stick_ready = false
+              elif stick_ready and sizing.y > 0.65:
+                  resize_photo(1.08)
+                  stick_ready = false
+              elif stick_ready and sizing.y < -0.65:
+                  resize_photo(0.92)
+                  stick_ready = false
+              elif abs(navigation.x) < 0.25 and abs(sizing.y) < 0.25:
+                  stick_ready = true
+
+          func _on_button_pressed(button_name: String) -> void:
+              if button_name in ["ax_button", "by_button", "trigger_click"]:
+                  if files.is_empty():
+                      scan_photos()
+                  else:
+                      swapped = not swapped
+                      show_current()
+
+          func next_photo(direction: int) -> void:
+              if files.is_empty():
+                  return
+              current_index = (current_index + direction + files.size()) % files.size()
+              show_current()
+
+          func resize_photo(multiplier: float) -> void:
+              if files.is_empty():
+                  return
+              display_scale = clampf(display_scale * multiplier, 0.55, 1.8)
+              show_current()
+
+          func _unhandled_input(event: InputEvent) -> void:
+              if event.is_action_pressed("ui_right"):
+                  next_photo(1)
+              elif event.is_action_pressed("ui_left"):
+                  next_photo(-1)
+              elif event.is_action_pressed("ui_accept"):
+                  _on_button_pressed("ax_button")
+              elif event.is_action_pressed("ui_up"):
+                  resize_photo(1.08)
+              elif event.is_action_pressed("ui_down"):
+                  resize_photo(0.92)
+          EOF
+
+          test -s StereoViewer/main.gd
+          test -s StereoViewer/Main.tscn
+
       - name: Android doku sikistirmasini etkinlestir
         shell: bash
         run: |
@@ -196,8 +484,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=1
-          version/name="0.1.0"
+          version/code=2
+          version/name="0.2.0"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -286,7 +574,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.1.0-APK
+          name: StereoViewer-Quest-v0.2.0-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
