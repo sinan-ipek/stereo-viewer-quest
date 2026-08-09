@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.4.1 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.4.2 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.4.1"
+          config/version="0.4.2"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -194,7 +194,9 @@ jobs:
           current = false
           EOF
 
-          cat > StereoViewer/main.gd <<'EOF'
+          # Eski deneme kodu yalnızca geçmiş karşılaştırması için geçici dosyaya
+          # yazılır; projeye dahil edilmez. Aktif main.gd aşağıdaki v0.4.2 bloğudur.
+          cat > /tmp/stereoviewer-obsolete-main.gd <<'EOF'
           extends Node3D
 
           const MIN_PHOTO_SCALE := 0.45
@@ -657,7 +659,7 @@ jobs:
                   swap_stereo_eyes()
           EOF
 
-          # v0.4.1: Tek-fotograf secicisi + uygulama icinde onceki/sonraki
+          # v0.4.2: Tek-fotograf secicisi + uygulama icinde onceki/sonraki
           # fotograf gecisi. Bu blok onceki deneme akisini tamamen degistirir.
           cat > StereoViewer/main.gd <<'EOF'
           extends Node3D
@@ -677,8 +679,14 @@ jobs:
               "/storage/emulated/0/Pictures"
           ]
 
-          const A_BUTTON_NAMES := [&"ax_button", &"a_button", &"primary_click"]
-          const B_BUTTON_NAMES := [&"by_button", &"b_button", &"secondary_click"]
+          const A_BUTTON_NAMES := [
+              &"ax_button", &"a_button", &"a_click", &"primary_click",
+              &"primary_button", &"primary_button_click"
+          ]
+          const B_BUTTON_NAMES := [
+              &"by_button", &"b_button", &"b_click", &"secondary_click",
+              &"secondary_button", &"secondary_button_click"
+          ]
           const STICK_NAMES := [&"primary", &"thumbstick", &"joystick"]
 
           @onready var xr_camera: XRCamera3D = $XROrigin3D/XRCamera3D
@@ -713,7 +721,6 @@ jobs:
               start_xr()
               left_controller.button_pressed.connect(_on_left_button_pressed)
               right_controller.button_pressed.connect(_on_right_button_pressed)
-              OS.request_permissions()
               await get_tree().process_frame
               await get_tree().process_frame
               recenter_display()
@@ -1007,7 +1014,12 @@ jobs:
               update_status()
 
           func _on_right_button_pressed(button_name: String) -> void:
-              if button_name in A_BUTTON_NAMES:
+              # Fotoğraf henüz yokken sağ kumandadan gelen ilk gerçek düğme
+              # olayı fotoğraf seçicisini açar. Böylece Godot/Meta sürümünün
+              # A eylemine verdiği ad değişse bile ilk A basışı kaybolmaz.
+              if current_texture == null and not picker_open:
+                  request_photo_picker()
+              elif button_name in A_BUTTON_NAMES:
                   request_photo_picker()
               elif button_name in B_BUTTON_NAMES:
                   swap_stereo_eyes()
@@ -1113,8 +1125,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=14
-          version/name="0.4.1"
+          version/code=15
+          version/name="0.4.2"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -1274,7 +1286,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.4.1-APK
+          name: StereoViewer-Quest-v0.4.2-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
