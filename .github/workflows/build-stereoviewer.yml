@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.3.5 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.3.7 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.3.5"
+          config/version="0.3.7"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -62,8 +62,8 @@ jobs:
           [rendering]
           renderer/rendering_method="gl_compatibility"
           renderer/rendering_method.mobile="gl_compatibility"
-          textures/default_filters/use_nearest_mipmap_filter=false
           textures/vram_compression/import_etc2_astc=true
+          anti_aliasing/quality/msaa_3d=0
           xr/openxr/enabled=true
 
           [xr]
@@ -89,7 +89,7 @@ jobs:
           shader_type spatial;
           render_mode unshaded, cull_disabled;
 
-          uniform sampler2D stereo_photo : source_color;
+          uniform sampler2D stereo_photo : source_color, repeat_disable, filter_linear;
           uniform bool swap_eyes = false;
 
           void fragment() {
@@ -182,7 +182,7 @@ jobs:
           font_size = 22
           outline_size = 6
           modulate = Color(0.82, 0.9, 1, 1)
-          text = "A: Başka fotoğraf   X: Gözleri değiştir   Sağ çubuk: Mesafe"
+          text = "A: Başka fotoğraf   B: Gözleri değiştir   Sağ çubuk: Büyüt / küçült"
 
           [node name="LeftController" type="XRController3D" parent="XROrigin3D"]
           tracker = &"left_hand"
@@ -197,9 +197,11 @@ jobs:
           cat > StereoViewer/main.gd <<'EOF'
           extends Node3D
 
-          const MIN_DISTANCE := 1.4
-          const MAX_DISTANCE := 5.0
-          const DISTANCE_SPEED := 1.35
+          const MIN_PHOTO_SCALE := 0.45
+          const MAX_PHOTO_SCALE := 2.50
+          const ZOOM_SPEED := 1.15
+          const BUTTON_COOLDOWN_MS := 350
+          const XR_RENDER_SCALE := 1.25
 
           @onready var xr_origin: XROrigin3D = $XROrigin3D
           @onready var xr_camera: XRCamera3D = $XROrigin3D/XRCamera3D
@@ -216,10 +218,14 @@ jobs:
           var current_name := ""
           var swapped := false
           var viewing_distance := 2.4
+          var photo_scale := 1.0
+          var base_photo_size := Vector2(3.2, 1.8)
           var picker_open := false
           var picker_request_id := 0
           var application_was_paused := false
-          var a_button_was_down := false
+          var wait_for_a_release := false
+          var last_a_action_ms := -1000
+          var last_b_action_ms := -1000
 
           func _ready() -> void:
               start_xr()
@@ -233,6 +239,10 @@ jobs:
           func start_xr() -> void:
               var xr := XRServer.find_interface("OpenXR")
               if xr != null and not xr.is_initialized():
+                  # Fotoğraf, Quest'in varsayılan ara görüntüsünden %25 daha
+                  # yüksek çözünürlükte çizilir. Bu değer OpenXR başlamadan
+                  # önce ayarlanmak zorundadır.
+                  xr.render_target_size_multiplier = XR_RENDER_SCALE
                   xr.initialize()
               if xr == null or not xr.is_initialized():
                   $FallbackCamera.current = true
@@ -279,6 +289,7 @@ jobs:
               # Callback hangi sonuçla dönerse dönsün A kilidini ilk iş kaldır.
               picker_open = false
               application_was_paused = false
+              wait_for_a_release = true
               if not status or paths.is_empty():
                   if current_texture == null:
                       show_welcome()
@@ -325,6 +336,9 @@ jobs:
                   show_error("Bu fotoğraf biçimi açılamadı.\nJPG, PNG veya WEBP seçin.")
                   return
 
+              # Orijinal çözülmüş pikselleri aynen GPU'ya gönder. Mipmap üretme,
+              # yeniden boyutlandırma, yeniden sıkıştırma veya JPEG'e yeniden
+              # kaydetme yapılmaz. Her göz tek özgün SBS dokunun kendi yarısını okur.
               current_texture = ImageTexture.create_from_image(image)
               current_name = uri.get_file().uri_decode()
               var material := photo.get_active_material(0) as ShaderMaterial
@@ -334,7 +348,9 @@ jobs:
               var eye_aspect := (float(image.get_width()) * 0.5) / float(image.get_height())
               var height := 1.8
               var width := height * eye_aspect
-              photo.mesh.size = Vector2(width, height)
+              base_photo_size = Vector2(width, height)
+              photo_scale = 1.0
+              apply_photo_scale()
               viewing_distance = 2.4
               recenter_display()
               info_panel.visible = false
@@ -346,6 +362,7 @@ jobs:
               if what == NOTIFICATION_APPLICATION_PAUSED and picker_open:
                   application_was_paused = true
               elif what == NOTIFICATION_APPLICATION_RESUMED and picker_open:
+                  wait_for_a_release = true
                   # Android seçicisinin geri çağrısına birkaç kare süre tanı.
                   # Geri çağrı gelmezse A düğmesinin kalıcı kilitlenmesini önle.
                   var request_at_resume := picker_request_id
@@ -356,6 +373,7 @@ jobs:
               if picker_open and picker_request_id == request_at_resume:
                   picker_open = false
                   application_was_paused = false
+                  wait_for_a_release = true
                   if current_texture == null:
                       show_error("Fotoğraf alınamadı.\nA ile yeniden seçim yapın.")
 
@@ -378,46 +396,56 @@ jobs:
               display.look_at(camera_transform.origin, Vector3.UP, true)
 
           func _process(delta: float) -> void:
-              # Sinyal Android/Quest odağa dönüşünde kaçsa bile A düğmesini
-              # her kare kenar-tetiklemeli olarak denetle.
-              var a_button_down := right_controller.is_button_pressed("ax_button")
-              if a_button_down and not a_button_was_down and not picker_open:
-                  open_photo_picker()
-              a_button_was_down = a_button_down
-
               if current_texture == null or picker_open:
                   return
               var stick := right_controller.get_vector2("primary")
               if abs(stick.y) > 0.15:
-                  viewing_distance = clampf(
-                      viewing_distance - stick.y * DISTANCE_SPEED * delta,
-                      MIN_DISTANCE,
-                      MAX_DISTANCE
+                  photo_scale = clampf(
+                      photo_scale + stick.y * ZOOM_SPEED * delta,
+                      MIN_PHOTO_SCALE,
+                      MAX_PHOTO_SCALE
                   )
-                  recenter_display()
+                  apply_photo_scale()
                   update_status()
+
+          func apply_photo_scale() -> void:
+              photo.mesh.size = base_photo_size * photo_scale
 
           func update_status() -> void:
-              photo_status.text = "A: Başka fotoğraf   X: Gözleri değiştir   Sağ çubuk: Mesafe   %.1f m" % viewing_distance
+              photo_status.text = "A: Başka fotoğraf   B: Gözleri değiştir   Sağ çubuk: Büyüt / küçült   %d%%" % int(photo_scale * 100.0)
+
+          func request_photo_picker() -> void:
+              var now := Time.get_ticks_msec()
+              if picker_open or now - last_a_action_ms < BUTTON_COOLDOWN_MS:
+                  return
+              last_a_action_ms = now
+              open_photo_picker()
+
+          func swap_stereo_eyes() -> void:
+              var now := Time.get_ticks_msec()
+              if current_texture == null or picker_open or now - last_b_action_ms < BUTTON_COOLDOWN_MS:
+                  return
+              last_b_action_ms = now
+              swapped = not swapped
+              var material := photo.get_active_material(0) as ShaderMaterial
+              material.set_shader_parameter("swap_eyes", swapped)
+              update_status()
 
           func _on_right_button_pressed(button_name: String) -> void:
-              if button_name in ["ax_button", "trigger_click"]:
-                  open_photo_picker()
+              if button_name == "ax_button":
+                  wait_for_a_release = false
+                  request_photo_picker()
+              elif button_name == "by_button":
+                  swap_stereo_eyes()
 
-          func _on_left_button_pressed(button_name: String) -> void:
-              if button_name == "ax_button" and current_texture != null:
-                  swapped = not swapped
-                  var material := photo.get_active_material(0) as ShaderMaterial
-                  material.set_shader_parameter("swap_eyes", swapped)
-                  update_status()
+          func _on_left_button_pressed(_button_name: String) -> void:
+              pass
 
           func _unhandled_input(event: InputEvent) -> void:
               if event.is_action_pressed("ui_accept"):
-                  open_photo_picker()
+                  request_photo_picker()
               elif event.is_action_pressed("ui_cancel") and current_texture != null:
-                  swapped = not swapped
-                  var material := photo.get_active_material(0) as ShaderMaterial
-                  material.set_shader_parameter("swap_eyes", swapped)
+                  swap_stereo_eyes()
           EOF
 
           test -s StereoViewer/project.godot
@@ -517,8 +545,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=8
-          version/name="0.3.5"
+          version/code=10
+          version/name="0.3.7"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -677,7 +705,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.3.5-APK
+          name: StereoViewer-Quest-v0.3.7-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
