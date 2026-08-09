@@ -424,6 +424,26 @@ jobs:
           touch StereoViewer/android/.gdignore
           test -f StereoViewer/android/build/build.gradle
 
+      - name: Quest VR manifest tanimini ekle
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="StereoViewer/android/build/AndroidManifest.xml"
+          test -f "$MANIFEST"
+
+          if ! grep -Fq 'com.oculus.intent.category.VR' "$MANIFEST"; then
+            sed -i \
+              '/android.intent.action.MAIN/a\            <category android:name="com.oculus.intent.category.VR" />' \
+              "$MANIFEST"
+          fi
+
+          if ! grep -Fq 'com.oculus.intent.category.VR' "$MANIFEST"; then
+            echo "HATA: Quest VR kategorisi AndroidManifest.xml dosyasina eklenemedi."
+            exit 1
+          fi
+
+          echo "TAMAM: Quest VR kategorisi Android derleme manifestine eklendi."
+
       - name: Kalici uygulama imzasini yaz ve dogrula
         shell: bash
         run: |
