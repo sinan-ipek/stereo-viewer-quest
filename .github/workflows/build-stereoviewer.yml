@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.3.9 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.4.0 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.3.9"
+          config/version="0.4.0"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -202,6 +202,8 @@ jobs:
           const ZOOM_SPEED := 1.15
           const BUTTON_COOLDOWN_MS := 350
           const XR_RENDER_SCALE := 1.25
+          const FOLDER_URI_FILE := "user://photo_folder_uri.txt"
+          const IMAGE_EXTENSIONS := ["jpg", "jpeg", "png", "webp"]
 
           const A_BUTTON_NAMES := [&"ax_button", &"a_button", &"primary_click"]
           const B_BUTTON_NAMES := [&"by_button", &"b_button", &"secondary_click"]
@@ -236,6 +238,11 @@ jobs:
           var rebind_generation := 0
           var xr_recovery_running := false
           var xr_recovery_requested := false
+          var folder_uri := ""
+          var photo_files: Array[String] = []
+          var selected_file := 0
+          var library_open := false
+          var stick_was_active := false
 
           func _ready() -> void:
               process_mode = Node.PROCESS_MODE_ALWAYS
@@ -248,6 +255,7 @@ jobs:
               await get_tree().process_frame
               await get_tree().process_frame
               recenter_display()
+              load_saved_folder_uri()
               show_welcome()
               rebind_controllers()
 
@@ -271,10 +279,24 @@ jobs:
               photo.visible = false
               photo_status.visible = false
               info_panel.visible = true
-              message.text = "A düğmesine basarak\nbir SBS fotoğraf seçin."
-              help.text = "A: Fotoğraf seç"
+              if folder_uri.is_empty():
+                  message.text = "İlk kurulum\n\nA ile Download klasörünü seçin."
+                  help.text = "Klasörü bir kez seçtikten sonra uygulamayı yeniden açın."
+              else:
+                  message.text = "A düğmesine basarak\nfotoğraf listesini açın."
+                  help.text = "A: Fotoğraf listesi"
+
+          func load_saved_folder_uri() -> void:
+              if not FileAccess.file_exists(FOLDER_URI_FILE):
+                  return
+              var saved := FileAccess.get_file_as_string(FOLDER_URI_FILE).strip_edges()
+              if saved.begins_with("content://"):
+                  folder_uri = saved
 
           func open_photo_picker() -> void:
+              if not folder_uri.is_empty():
+                  open_photo_library()
+                  return
               if picker_open:
                   return
               if not DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
@@ -292,7 +314,7 @@ jobs:
                   "",
                   "",
                   false,
-                  DisplayServer.FILE_DIALOG_MODE_OPEN_FILE,
+                  DisplayServer.FILE_DIALOG_MODE_OPEN_DIR,
                   filters,
                   _on_photo_selected
               )
@@ -306,16 +328,62 @@ jobs:
               application_was_paused = false
               wait_for_a_release = true
               if not status or paths.is_empty():
-                  if current_texture == null:
-                      show_welcome()
-                  recover_xr_input.call_deferred()
+                  show_welcome()
                   return
-              load_photo_from_uri(paths[0])
-              # Android belge seçicisi ayrı bir Activity açar. Quest'e dönüldüğünde
-              # görüntü geri gelse bile eski OpenXR giriş oturumu geçersiz kalabilir.
-              # Yalnızca controller düğümünü yeniden bağlamak yeterli değildir;
-              # OpenXR arayüzünü kapatıp yeniden başlatmak gerekir.
-              recover_xr_input.call_deferred()
+              folder_uri = paths[0]
+              var android_runtime := Engine.get_singleton("AndroidRuntime")
+              if android_runtime != null and folder_uri.begins_with("content://"):
+                  android_runtime.updatePersistableUriPermission(folder_uri, true)
+              var saved := FileAccess.open(FOLDER_URI_FILE, FileAccess.WRITE)
+              if saved != null:
+                  saved.store_string(folder_uri)
+                  saved.close()
+              info_panel.visible = true
+              message.text = "Klasör kaydedildi."
+              help.text = "Kumandaların temiz başlaması için\nuygulamayı kapatıp bir kez yeniden açın."
+
+          func open_photo_library() -> void:
+              photo_files.clear()
+              var directory := DirAccess.open(folder_uri + "#")
+              if directory == null:
+                  folder_uri = ""
+                  DirAccess.remove_absolute(ProjectSettings.globalize_path(FOLDER_URI_FILE))
+                  show_error("Klasör erişimi kayboldu.\nA ile Download klasörünü yeniden seçin.")
+                  return
+              directory.list_dir_begin()
+              while true:
+                  var file_name := directory.get_next()
+                  if file_name.is_empty():
+                      break
+                  if not directory.current_is_dir() and file_name.get_extension().to_lower() in IMAGE_EXTENSIONS:
+                      photo_files.append(file_name)
+              directory.list_dir_end()
+              photo_files.sort()
+              if photo_files.is_empty():
+                  show_error("Seçilen klasörde JPG, PNG veya WEBP fotoğraf yok.")
+                  return
+              selected_file = clampi(selected_file, 0, photo_files.size() - 1)
+              library_open = true
+              photo.visible = false
+              photo_status.visible = false
+              info_panel.visible = true
+              update_library_text()
+
+          func update_library_text() -> void:
+              var lines: Array[String] = []
+              var first := maxi(0, selected_file - 2)
+              var last := mini(photo_files.size(), first + 5)
+              first = maxi(0, last - 5)
+              for index in range(first, last):
+                  lines.append(("> " if index == selected_file else "  ") + photo_files[index])
+              message.text = "\n".join(lines)
+              help.text = "Sağ çubuk: Seç   A: Aç   B: Geri"
+
+          func open_selected_library_photo() -> void:
+              if photo_files.is_empty():
+                  return
+              library_open = false
+              load_photo_from_uri(folder_uri + "#" + photo_files[selected_file])
 
           func load_photo_from_uri(uri: String) -> void:
               # Godot 4.6 Android SAF: seçicinin verdiği content:// URI iznini
@@ -390,8 +458,9 @@ jobs:
                   var request_at_resume := picker_request_id
                   unlock_picker_after_resume.call_deferred(request_at_resume)
               elif what == NOTIFICATION_APPLICATION_RESUMED:
+                  # OpenXR yaşam döngüsünü Godot/Meta eklentisi yönetir. Burada
+                  # arayüzü elle kapatıp açmak kumanda oturumunu bozuyordu.
                   get_tree().paused = false
-                  recover_xr_input.call_deferred()
 
           func recover_xr_input() -> void:
               if xr_recovery_running:
@@ -432,7 +501,8 @@ jobs:
               xr_recovery_running = false
               if xr_recovery_requested:
                   xr_recovery_requested = false
-                  recover_xr_input.call_deferred()
+                  # İlk klasör seçimi sonrasında uygulama bir kez yeniden açılır;
+                  # OpenXR arayüzüne burada elle müdahale edilmez.
 
           func rebind_controllers() -> void:
               # Quest'in Android dosya seçicisi OpenXR oturumunu durdurup yeniden
@@ -458,7 +528,7 @@ jobs:
                   wait_for_a_release = true
                   if current_texture == null:
                       show_error("Fotoğraf alınamadı.\nA ile yeniden seçim yapın.")
-                  recover_xr_input.call_deferred()
+                  # Android seçiciden sonra OpenXR elle yeniden başlatılmaz.
 
           func show_error(text: String) -> void:
               photo.visible = false
@@ -498,9 +568,19 @@ jobs:
                   a_was_down = a_down
                   b_was_down = b_down
 
-              if current_texture == null or picker_open:
+              if picker_open:
                   return
               var stick := controller_stick()
+              if library_open:
+                  if abs(stick.y) < 0.25:
+                      stick_was_active = false
+                  elif not stick_was_active:
+                      selected_file = clampi(selected_file + (1 if stick.y < 0.0 else -1), 0, photo_files.size() - 1)
+                      stick_was_active = true
+                      update_library_text()
+                  return
+              if current_texture == null:
+                  return
               if abs(stick.y) > 0.18:
                   photo_scale = clampf(
                       photo_scale - stick.y * ZOOM_SPEED * delta,
@@ -534,9 +614,21 @@ jobs:
               if picker_open or now - last_a_action_ms < BUTTON_COOLDOWN_MS:
                   return
               last_a_action_ms = now
-              open_photo_picker()
+              if library_open:
+                  open_selected_library_photo()
+              else:
+                  open_photo_picker()
 
           func swap_stereo_eyes() -> void:
+              if library_open:
+                  library_open = false
+                  if current_texture == null:
+                      show_welcome()
+                  else:
+                      info_panel.visible = false
+                      photo.visible = true
+                      photo_status.visible = true
+                  return
               var now := Time.get_ticks_msec()
               if current_texture == null or picker_open or now - last_b_action_ms < BUTTON_COOLDOWN_MS:
                   return
@@ -547,10 +639,13 @@ jobs:
               update_status()
 
           func _on_right_button_pressed(button_name: String) -> void:
-              # Asıl okuma _process içindeki durum/kenar denetimidir. Bu sinyal
-              # yalnızca ilk açılışta kumanda durumunu daha hızlı etkinleştirir.
-              if button_name in A_BUTTON_NAMES or button_name in B_BUTTON_NAMES:
-                  controls_armed = true
+              # Quest'te güvenilir çalışan gerçek OpenXR düğme olayı ana yoldur.
+              # Her-kare okuma yalnızca yedek ve çubuk için kullanılır.
+              controls_armed = true
+              if button_name in A_BUTTON_NAMES:
+                  request_photo_picker()
+              elif button_name in B_BUTTON_NAMES:
+                  swap_stereo_eyes()
 
           func _on_left_button_pressed(_button_name: String) -> void:
               pass
@@ -659,8 +754,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=12
-          version/name="0.3.9"
+          version/code=13
+          version/name="0.4.0"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -820,7 +915,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.3.9-APK
+          name: StereoViewer-Quest-v0.4.0-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
