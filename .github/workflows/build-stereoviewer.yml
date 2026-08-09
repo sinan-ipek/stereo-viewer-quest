@@ -409,9 +409,9 @@ jobs:
           test -n "$ADDON_DIR"
           mkdir -p StereoViewer/addons
           cp -a "$ADDON_DIR" StereoViewer/addons/
-          find StereoViewer/addons/godotopenxrvendors \
-            -mindepth 1 -maxdepth 1 -type d ! -name meta -exec rm -rf {} +
-          test -f StereoViewer/addons/godotopenxrvendors/meta/plugin.gdextension
+          test -f StereoViewer/addons/godotopenxrvendors/plugin.gdextension
+          test -f StereoViewer/addons/godotopenxrvendors/.bin/android/debug/godotopenxr-meta-debug.aar
+          test -f StereoViewer/addons/godotopenxrvendors/.bin/android/release/godotopenxr-meta-release.aar
 
       - name: Android Gradle build template kur
         shell: bash
@@ -503,7 +503,8 @@ jobs:
         run: |
           GODOT="$HOME/godot-bin/Godot_v4.4.1-stable_linux.x86_64"
           "$GODOT" --headless --editor --path StereoViewer --import --quit-after 25
-          test -f StereoViewer/addons/godotopenxrvendors/meta/plugin.gdextension
+          test -f StereoViewer/addons/godotopenxrvendors/plugin.gdextension
+          test -f StereoViewer/addons/godotopenxrvendors/.bin/android/debug/godotopenxr-meta-debug.aar
           find StereoViewer/.godot/imported -name 'icon.svg-*.ctex' -print -quit | grep -q .
 
       - name: Quest APK olustur
