@@ -30,28 +30,29 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager \
             "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0" \
+            "platforms;android-35" \
+            "build-tools;35.0.1" \
             "cmdline-tools;latest" \
             "cmake;3.10.2.4988404" \
-            "ndk;23.2.8568313"
+            "ndk;28.1.13356709"
 
-      - name: Projeyi ZIP dosyasindan ac
+      - name: Bos proje klasorunu hazirla
         shell: bash
         run: |
           rm -rf StereoViewer
-          unzip -q -o StereoViewer-Quest-v0.1.0-project.zip
-          test -f StereoViewer/project.godot
+          mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.2.0 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.3.0 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
+          config/version="0.3.0"
+          config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
-          config/features=PackedStringArray("4.3", "GL Compatibility")
+          config/features=PackedStringArray("4.4", "GL Compatibility")
 
           [display]
           window/size/viewport_width=1832
@@ -67,6 +68,21 @@ jobs:
 
           [xr]
           openxr/enabled=true
+          EOF
+
+          cat > StereoViewer/icon.svg <<'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+            <defs>
+              <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#10182f"/>
+                <stop offset="1" stop-color="#3567d6"/>
+              </linearGradient>
+            </defs>
+            <rect width="512" height="512" rx="104" fill="url(#bg)"/>
+            <path d="M84 256c44-72 101-108 172-108s128 36 172 108c-44 72-101 108-172 108S128 328 84 256Z" fill="none" stroke="#fff" stroke-width="30" stroke-linejoin="round"/>
+            <circle cx="256" cy="256" r="68" fill="#57d9ff"/>
+            <circle cx="256" cy="256" r="28" fill="#10182f"/>
+          </svg>
           EOF
 
           cat > StereoViewer/stereo.gdshader <<'EOF'
@@ -101,63 +117,72 @@ jobs:
 
           [sub_resource type="StandardMaterial3D" id="PanelMaterial"]
           shading_mode = 0
-          albedo_color = Color(0.035, 0.055, 0.11, 0.97)
+          albedo_color = Color(0.025, 0.04, 0.085, 0.98)
 
           [sub_resource type="QuadMesh" id="PanelMesh"]
           material = SubResource("PanelMaterial")
-          size = Vector2(3.25, 1.85)
+          size = Vector2(2.6, 1.35)
 
-          [sub_resource type="StandardMaterial3D" id="FloorMaterial"]
-          albedo_color = Color(0.018, 0.023, 0.04, 1)
-          roughness = 1.0
+          [sub_resource type="Environment" id="Environment"]
+          background_mode = 1
+          background_color = Color(0.008, 0.012, 0.025, 1)
+          ambient_light_source = 3
+          ambient_light_color = Color(0.15, 0.18, 0.28, 1)
+          ambient_light_energy = 0.35
 
           [node name="Main" type="Node3D"]
           script = ExtResource("1")
 
           [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+          environment = SubResource("Environment")
 
           [node name="XROrigin3D" type="XROrigin3D" parent="."]
 
           [node name="XRCamera3D" type="XRCamera3D" parent="XROrigin3D"]
 
-          [node name="Photo" type="MeshInstance3D" parent="XROrigin3D/XRCamera3D"]
+          [node name="Display" type="Node3D" parent="XROrigin3D"]
+          position = Vector3(0, 1.55, -2.4)
+
+          [node name="Photo" type="MeshInstance3D" parent="XROrigin3D/Display"]
           visible = false
-          position = Vector3(0, 0, -2.2)
           mesh = SubResource("PhotoMesh")
 
-          [node name="InfoPanel" type="Node3D" parent="XROrigin3D/XRCamera3D"]
-          position = Vector3(0, 0, -2.18)
+          [node name="InfoPanel" type="Node3D" parent="XROrigin3D/Display"]
 
-          [node name="Background" type="MeshInstance3D" parent="XROrigin3D/XRCamera3D/InfoPanel"]
+          [node name="Background" type="MeshInstance3D" parent="XROrigin3D/Display/InfoPanel"]
+          position = Vector3(0, 0, -0.015)
           mesh = SubResource("PanelMesh")
 
-          [node name="Title" type="Label3D" parent="XROrigin3D/XRCamera3D/InfoPanel"]
-          position = Vector3(0, 0.48, 0.02)
-          font_size = 64
-          outline_size = 10
+          [node name="Title" type="Label3D" parent="XROrigin3D/Display/InfoPanel"]
+          position = Vector3(0, 0.37, 0)
+          pixel_size = 0.0025
+          font_size = 46
+          outline_size = 7
           text = "StereoViewer"
 
-          [node name="Message" type="Label3D" parent="XROrigin3D/XRCamera3D/InfoPanel"]
-          position = Vector3(0, 0.08, 0.02)
-          width = 1000.0
-          font_size = 34
-          outline_size = 8
-          text = "Quest galerisi taraniyor..."
+          [node name="Message" type="Label3D" parent="XROrigin3D/Display/InfoPanel"]
+          position = Vector3(0, 0.03, 0)
+          pixel_size = 0.0025
+          font_size = 30
+          outline_size = 6
+          text = "A düğmesine basarak\nbir SBS fotoğraf seçin."
 
-          [node name="Help" type="Label3D" parent="XROrigin3D/XRCamera3D/InfoPanel"]
-          position = Vector3(0, -0.53, 0.02)
-          width = 1200.0
-          font_size = 25
-          outline_size = 7
+          [node name="Help" type="Label3D" parent="XROrigin3D/Display/InfoPanel"]
+          position = Vector3(0, -0.43, 0)
+          pixel_size = 0.0025
+          font_size = 22
+          outline_size = 5
           modulate = Color(0.62, 0.82, 1, 1)
-          text = "A: yeniden tara   |   Sol cubuk: onceki/sonraki"
+          text = "A: Fotoğraf seç"
 
-          [node name="PhotoStatus" type="Label3D" parent="XROrigin3D/XRCamera3D"]
+          [node name="PhotoStatus" type="Label3D" parent="XROrigin3D/Display"]
           visible = false
-          position = Vector3(0, -1.03, -2.15)
-          width = 1450.0
-          font_size = 25
-          outline_size = 8
+          position = Vector3(0, -1.02, 0.02)
+          pixel_size = 0.0022
+          font_size = 22
+          outline_size = 6
+          modulate = Color(0.82, 0.9, 1, 1)
+          text = "A: Başka fotoğraf   X: Gözleri değiştir   Sağ çubuk: Mesafe"
 
           [node name="LeftController" type="XRController3D" parent="XROrigin3D"]
           tracker = &"left_hand"
@@ -172,227 +197,210 @@ jobs:
           cat > StereoViewer/main.gd <<'EOF'
           extends Node3D
 
-          @onready var photo: MeshInstance3D = $XROrigin3D/XRCamera3D/Photo
-          @onready var info_panel: Node3D = $XROrigin3D/XRCamera3D/InfoPanel
-          @onready var message: Label3D = $XROrigin3D/XRCamera3D/InfoPanel/Message
-          @onready var help: Label3D = $XROrigin3D/XRCamera3D/InfoPanel/Help
-          @onready var photo_status: Label3D = $XROrigin3D/XRCamera3D/PhotoStatus
+          const MIN_DISTANCE := 1.4
+          const MAX_DISTANCE := 5.0
+          const DISTANCE_SPEED := 1.35
+
+          @onready var xr_origin: XROrigin3D = $XROrigin3D
+          @onready var xr_camera: XRCamera3D = $XROrigin3D/XRCamera3D
+          @onready var display: Node3D = $XROrigin3D/Display
+          @onready var photo: MeshInstance3D = $XROrigin3D/Display/Photo
+          @onready var info_panel: Node3D = $XROrigin3D/Display/InfoPanel
+          @onready var message: Label3D = $XROrigin3D/Display/InfoPanel/Message
+          @onready var help: Label3D = $XROrigin3D/Display/InfoPanel/Help
+          @onready var photo_status: Label3D = $XROrigin3D/Display/PhotoStatus
           @onready var left_controller: XRController3D = $XROrigin3D/LeftController
           @onready var right_controller: XRController3D = $XROrigin3D/RightController
 
-          var files: Array[String] = []
-          var current_index := 0
+          var current_texture: ImageTexture
+          var current_name := ""
           var swapped := false
-          var display_scale := 1.0
-          var stick_ready := true
+          var viewing_distance := 2.4
+          var picker_open := false
 
           func _ready() -> void:
               start_xr()
-              connect_controllers()
-              request_storage_permission()
-              message.text = "Quest galerisi taraniyor..."
-              await get_tree().create_timer(1.2).timeout
-              scan_photos()
+              left_controller.button_pressed.connect(_on_left_button_pressed)
+              right_controller.button_pressed.connect(_on_right_button_pressed)
+              await get_tree().process_frame
+              await get_tree().process_frame
+              recenter_display()
+              show_welcome()
 
           func start_xr() -> void:
               var xr := XRServer.find_interface("OpenXR")
               if xr == null or not xr.is_initialized():
                   $FallbackCamera.current = true
-                  message.text = "OpenXR baslatilamadi."
+                  message.text = "OpenXR başlatılamadı."
+                  help.text = "Uygulamayı Quest içinde yeniden başlatın."
                   return
               get_viewport().use_xr = true
               DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 
-          func connect_controllers() -> void:
-              left_controller.button_pressed.connect(_on_button_pressed)
-              right_controller.button_pressed.connect(_on_button_pressed)
-
-          func request_storage_permission() -> void:
-              if OS.get_name() == "Android":
-                  OS.request_permissions()
-
-          func scan_photos() -> void:
-              files.clear()
-              var roots: Array[String] = [
-                  "/storage/emulated/0/Pictures/StereoGuide",
-                  "/storage/emulated/0/Pictures",
-                  "/storage/emulated/0/DCIM/StereoGuide",
-                  "/storage/emulated/0/DCIM",
-                  "/sdcard/Pictures/StereoGuide",
-                  "/sdcard/Pictures",
-                  "/sdcard/DCIM/StereoGuide",
-                  "/sdcard/DCIM"
-              ]
-              for root in roots:
-                  collect_images(root)
-              files.sort()
-              if files.is_empty():
-                  show_empty_state()
-              else:
-                  current_index = files.size() - 1
-                  show_current()
-
-          func collect_images(path: String) -> void:
-              var dir := DirAccess.open(path)
-              if dir == null:
-                  return
-              dir.list_dir_begin()
-              var file_name := dir.get_next()
-              while file_name != "":
-                  if not dir.current_is_dir():
-                      var extension := file_name.get_extension().to_lower()
-                      var full_path := path.path_join(file_name)
-                      if extension in ["jpg", "jpeg", "png", "webp"] and not files.has(full_path):
-                          files.append(full_path)
-                  file_name = dir.get_next()
-              dir.list_dir_end()
-
-          func show_empty_state() -> void:
+          func show_welcome() -> void:
               photo.visible = false
               photo_status.visible = false
               info_panel.visible = true
-              message.text = "SBS fotograf bulunamadi.\n\nTelefon uygulamasiyla cekilen yan yana fotografi\nQuest'in Pictures/StereoGuide klasorune kopyalayin."
-              help.text = "A: yeniden tara"
+              message.text = "A düğmesine basarak\nbir SBS fotoğraf seçin."
+              help.text = "A: Fotoğraf seç"
 
-          func show_current() -> void:
-              if files.is_empty():
-                  show_empty_state()
+          func open_photo_picker() -> void:
+              if picker_open:
                   return
+              if not DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
+                  show_error("Sistem dosya seçicisi açılamadı.")
+                  return
+              picker_open = true
+              message.text = "Fotoğraf seçici açılıyor..."
+              help.text = "Bir JPG, PNG veya WEBP dosyası seçin."
+              var filters := PackedStringArray([
+                  "*.jpg,*.jpeg,*.png,*.webp;Fotoğraflar;image/jpeg,image/png,image/webp"
+              ])
+              var result := DisplayServer.file_dialog_show(
+                  "SBS fotoğraf seç",
+                  "",
+                  "",
+                  false,
+                  DisplayServer.FILE_DIALOG_MODE_OPEN_FILE,
+                  filters,
+                  _on_photo_selected
+              )
+              if result != OK:
+                  picker_open = false
+                  show_error("Fotoğraf seçici başlatılamadı.")
+
+          func _on_photo_selected(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
+              picker_open = false
+              if not status or paths.is_empty():
+                  if current_texture == null:
+                      show_welcome()
+                  return
+              load_photo_from_uri(paths[0])
+
+          func load_photo_from_uri(uri: String) -> void:
+              var file := FileAccess.open(uri, FileAccess.READ)
+              if file == null:
+                  show_error("Seçilen fotoğraf okunamadı.")
+                  return
+              var bytes := file.get_buffer(file.get_length())
+              file.close()
+              if bytes.is_empty():
+                  show_error("Seçilen fotoğraf boş veya erişilemiyor.")
+                  return
+
               var image := Image.new()
-              var error := image.load(files[current_index])
+              var error := image.load_jpg_from_buffer(bytes)
               if error != OK:
-                  info_panel.visible = true
-                  photo.visible = false
-                  message.text = "Fotograf acilamadi:\n" + files[current_index].get_file()
-                  help.text = "A: yeniden tara   |   Sol cubuk: baska fotograf"
+                  error = image.load_png_from_buffer(bytes)
+              if error != OK:
+                  error = image.load_webp_from_buffer(bytes)
+              if error != OK or image.is_empty():
+                  show_error("Bu fotoğraf biçimi açılamadı.\nJPG, PNG veya WEBP seçin.")
                   return
-              var texture := ImageTexture.create_from_image(image)
+
+              current_texture = ImageTexture.create_from_image(image)
+              current_name = uri.get_file().uri_decode()
               var material := photo.get_active_material(0) as ShaderMaterial
-              material.set_shader_parameter("stereo_photo", texture)
+              material.set_shader_parameter("stereo_photo", current_texture)
               material.set_shader_parameter("swap_eyes", swapped)
-              var half_ratio := (float(image.get_width()) * 0.5) / float(image.get_height())
-              photo.scale = Vector3((half_ratio / (16.0 / 9.0)) * display_scale, display_scale, 1.0)
+
+              var eye_aspect := (float(image.get_width()) * 0.5) / float(image.get_height())
+              var height := 1.8
+              var width := height * eye_aspect
+              photo.mesh.size = Vector2(width, height)
+              viewing_distance = 2.4
+              recenter_display()
               info_panel.visible = false
               photo.visible = true
               photo_status.visible = true
-              photo_status.text = "%d/%d  %s\nSol cubuk: fotograf  |  A: gozleri degistir  |  Sag cubuk: boyut" % [current_index + 1, files.size(), files[current_index].get_file()]
+              update_status()
 
-          func _process(_delta: float) -> void:
-              var navigation := left_controller.get_vector2("primary")
-              var sizing := right_controller.get_vector2("primary")
-              if stick_ready and navigation.x > 0.65:
-                  next_photo(1)
-                  stick_ready = false
-              elif stick_ready and navigation.x < -0.65:
-                  next_photo(-1)
-                  stick_ready = false
-              elif stick_ready and sizing.y > 0.65:
-                  resize_photo(1.08)
-                  stick_ready = false
-              elif stick_ready and sizing.y < -0.65:
-                  resize_photo(0.92)
-                  stick_ready = false
-              elif abs(navigation.x) < 0.25 and abs(sizing.y) < 0.25:
-                  stick_ready = true
+          func show_error(text: String) -> void:
+              photo.visible = false
+              photo_status.visible = false
+              info_panel.visible = true
+              message.text = text
+              help.text = "A: Yeniden fotoğraf seç"
 
-          func _on_button_pressed(button_name: String) -> void:
-              if button_name in ["ax_button", "by_button", "trigger_click"]:
-                  if files.is_empty():
-                      scan_photos()
-                  else:
-                      swapped = not swapped
-                      show_current()
+          func recenter_display() -> void:
+              var camera_transform := xr_camera.transform
+              var forward := -camera_transform.basis.z
+              forward.y = 0.0
+              if forward.length_squared() < 0.001:
+                  forward = Vector3.FORWARD
+              forward = forward.normalized()
+              display.position = camera_transform.origin + forward * viewing_distance
+              display.position.y = camera_transform.origin.y
+              display.look_at(camera_transform.origin, Vector3.UP, true)
 
-          func next_photo(direction: int) -> void:
-              if files.is_empty():
+          func _process(delta: float) -> void:
+              if current_texture == null or picker_open:
                   return
-              current_index = (current_index + direction + files.size()) % files.size()
-              show_current()
+              var stick := right_controller.get_vector2("primary")
+              if abs(stick.y) > 0.15:
+                  viewing_distance = clampf(
+                      viewing_distance - stick.y * DISTANCE_SPEED * delta,
+                      MIN_DISTANCE,
+                      MAX_DISTANCE
+                  )
+                  recenter_display()
+                  update_status()
 
-          func resize_photo(multiplier: float) -> void:
-              if files.is_empty():
-                  return
-              display_scale = clampf(display_scale * multiplier, 0.55, 1.8)
-              show_current()
+          func update_status() -> void:
+              photo_status.text = "A: Başka fotoğraf   X: Gözleri değiştir   Sağ çubuk: Mesafe   %.1f m" % viewing_distance
+
+          func _on_right_button_pressed(button_name: String) -> void:
+              if button_name in ["ax_button", "trigger_click"]:
+                  open_photo_picker()
+
+          func _on_left_button_pressed(button_name: String) -> void:
+              if button_name == "ax_button" and current_texture != null:
+                  swapped = not swapped
+                  var material := photo.get_active_material(0) as ShaderMaterial
+                  material.set_shader_parameter("swap_eyes", swapped)
+                  update_status()
 
           func _unhandled_input(event: InputEvent) -> void:
-              if event.is_action_pressed("ui_right"):
-                  next_photo(1)
-              elif event.is_action_pressed("ui_left"):
-                  next_photo(-1)
-              elif event.is_action_pressed("ui_accept"):
-                  _on_button_pressed("ax_button")
-              elif event.is_action_pressed("ui_up"):
-                  resize_photo(1.08)
-              elif event.is_action_pressed("ui_down"):
-                  resize_photo(0.92)
+              if event.is_action_pressed("ui_accept"):
+                  open_photo_picker()
+              elif event.is_action_pressed("ui_cancel") and current_texture != null:
+                  swapped = not swapped
+                  var material := photo.get_active_material(0) as ShaderMaterial
+                  material.set_shader_parameter("swap_eyes", swapped)
           EOF
 
-          test -s StereoViewer/main.gd
+          test -s StereoViewer/project.godot
           test -s StereoViewer/Main.tscn
+          test -s StereoViewer/main.gd
+          test -s StereoViewer/stereo.gdshader
 
-      - name: Android doku sikistirmasini etkinlestir
-        shell: bash
-        run: |
-          if ! grep -q '^textures/vram_compression/import_etc2_astc=true$' StereoViewer/project.godot; then
-            sed -i '/^\[rendering\]$/a textures/vram_compression/import_etc2_astc=true' StereoViewer/project.godot
-          fi
-          grep -q '^textures/vram_compression/import_etc2_astc=true$' StereoViewer/project.godot
-
-      - name: Uygulama ikonunu olustur ve projeye tanit
-        shell: bash
-        run: |
-          cat > StereoViewer/icon.svg <<'EOF'
-          <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-            <defs>
-              <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0" stop-color="#10182f"/>
-                <stop offset="1" stop-color="#3567d6"/>
-              </linearGradient>
-            </defs>
-            <rect width="512" height="512" rx="104" fill="url(#bg)"/>
-            <path d="M84 256c44-72 101-108 172-108s128 36 172 108c-44 72-101 108-172 108S128 328 84 256Z" fill="none" stroke="#ffffff" stroke-width="30" stroke-linejoin="round"/>
-            <circle cx="256" cy="256" r="68" fill="#57d9ff"/>
-            <circle cx="256" cy="256" r="28" fill="#10182f"/>
-          </svg>
-          EOF
-
-          if grep -q '^config/icon=' StereoViewer/project.godot; then
-            sed -i 's|^config/icon=.*$|config/icon="res://icon.svg"|' StereoViewer/project.godot
-          else
-            sed -i '/^\[application\]$/a config/icon="res://icon.svg"' StereoViewer/project.godot
-          fi
-
-          test -s StereoViewer/icon.svg
-          grep -q '^config/icon="res://icon.svg"$' StereoViewer/project.godot
-
-      - name: Godot 4.3 ve Android export template dosyalarini kur
+      - name: Godot 4.4.1 ve Android export template dosyalarini kur
         shell: bash
         run: |
           mkdir -p "$HOME/godot-bin"
           curl -fL --retry 3 \
             -o /tmp/godot.zip \
-            https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
+            https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_linux.x86_64.zip
           unzip -q -o /tmp/godot.zip -d "$HOME/godot-bin"
-          chmod +x "$HOME/godot-bin/Godot_v4.3-stable_linux.x86_64"
-          echo "$HOME/godot-bin" >> "$GITHUB_PATH"
+          chmod +x "$HOME/godot-bin/Godot_v4.4.1-stable_linux.x86_64"
 
           curl -fL --retry 3 \
             -o /tmp/templates.tpz \
-            https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz
-          mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
+            https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_export_templates.tpz
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.4.1.stable"
+          rm -rf /tmp/godot-templates
+          mkdir -p /tmp/godot-templates
           unzip -q -o /tmp/templates.tpz -d /tmp/godot-templates
           cp -a /tmp/godot-templates/templates/. \
-            "$HOME/.local/share/godot/export_templates/4.3.stable/"
-          test -f "$HOME/.local/share/godot/export_templates/4.3.stable/android_debug.apk"
-          test -f "$HOME/.local/share/godot/export_templates/4.3.stable/android_source.zip"
+            "$HOME/.local/share/godot/export_templates/4.4.1.stable/"
+          test -f "$HOME/.local/share/godot/export_templates/4.4.1.stable/android_source.zip"
 
       - name: Quest OpenXR Vendors eklentisini kur
         shell: bash
         run: |
           curl -fL --retry 3 \
             -o /tmp/openxr-vendors.zip \
-            https://github.com/GodotVR/godot_openxr_vendors/releases/download/2.0.4-stable/godotopenxrvendorsaddon.zip
+            https://github.com/GodotVR/godot_openxr_vendors/releases/download/4.2.2-stable/godotopenxrvendorsaddon.zip
           rm -rf /tmp/openxr-vendors
           mkdir -p /tmp/openxr-vendors
           unzip -q -o /tmp/openxr-vendors.zip -d /tmp/openxr-vendors
@@ -401,10 +409,6 @@ jobs:
           test -n "$ADDON_DIR"
           mkdir -p StereoViewer/addons
           cp -a "$ADDON_DIR" StereoViewer/addons/
-          test -d StereoViewer/addons/godotopenxrvendors
-
-          # Bu uygulama yalnizca Meta Quest icindir. Diger cihaz
-          # eklentilerini yuklemeyerek uyumsuz ve gereksiz kutuphaneleri disla.
           find StereoViewer/addons/godotopenxrvendors \
             -mindepth 1 -maxdepth 1 -type d ! -name meta -exec rm -rf {} +
           test -f StereoViewer/addons/godotopenxrvendors/meta/plugin.gdextension
@@ -412,36 +416,22 @@ jobs:
       - name: Android Gradle build template kur
         shell: bash
         run: |
-          rm -rf StereoViewer/android
           mkdir -p StereoViewer/android/build
           unzip -q -o \
-            "$HOME/.local/share/godot/export_templates/4.3.stable/android_source.zip" \
+            "$HOME/.local/share/godot/export_templates/4.4.1.stable/android_source.zip" \
             -d StereoViewer/android/build
-
-          # Godot'un "Project > Install Android Build Template" islemi,
-          # Gradle dosyalarina ek olarak surum bilgisini android klasorune yazar.
-          # Bu dosya olmazsa Godot, mevcut Gradle sablonunu gecersiz sayar.
-          printf '4.3.stable\n' > StereoViewer/android/.build_version
+          printf '4.4.1.stable\n' > StereoViewer/android/.build_version
           touch StereoViewer/android/.gdignore
-
           test -f StereoViewer/android/build/build.gradle
-          test "$(tr -d '\r\n' < StereoViewer/android/.build_version)" = "4.3.stable"
 
-      - name: Debug imza anahtarini hazirla
+      - name: Kalici uygulama imzasini dogrula
         shell: bash
         run: |
-          mkdir -p "$HOME/.android"
-          if [ ! -f "$HOME/.android/debug.keystore" ]; then
-            keytool -genkeypair \
-              -keystore "$HOME/.android/debug.keystore" \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
+          test -s StereoGuide/stereoguide-release.jks
+          keytool -list \
+            -keystore StereoGuide/stereoguide-release.jks \
+            -storepass StereoGuide2026 \
+            -alias stereoguide >/dev/null
 
       - name: Godot Android editor ayarlarini yaz
         shell: bash
@@ -453,14 +443,12 @@ jobs:
           [resource]
           export/android/android_sdk_path = "${ANDROID_SDK_ROOT}"
           export/android/java_sdk_path = "${JAVA_HOME_17_X64}"
-          export/android/debug_keystore = "${HOME}/.android/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
           EOF
 
       - name: Tam Quest export presetini yaz
         shell: bash
         run: |
+          KEYSTORE_PATH="$GITHUB_WORKSPACE/StereoGuide/stereoguide-release.jks"
           cat > StereoViewer/export_presets.cfg <<EOF
           [preset.0]
           name="Quest APK"
@@ -484,44 +472,37 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=2
-          version/name="0.2.0"
+          version/code=3
+          version/name="0.3.0"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
-          keystore/debug="${HOME}/.android/debug.keystore"
-          keystore/debug_user="androiddebugkey"
-          keystore/debug_password="android"
-          permissions/read_external_storage=true
+          keystore/debug="${KEYSTORE_PATH}"
+          keystore/debug_user="stereoguide"
+          keystore/debug_password="StereoGuide2026"
+          keystore/release="${KEYSTORE_PATH}"
+          keystore/release_user="stereoguide"
+          keystore/release_password="StereoGuide2026"
+          permissions/read_external_storage=false
           permissions/write_external_storage=false
-          permissions/custom_permissions=PackedStringArray("android.permission.READ_MEDIA_IMAGES")
+          permissions/custom_permissions=PackedStringArray()
           xr_features/xr_mode=1
           plugins/GodotOpenXRKHR=false
           plugins/GodotOpenXRLynx=false
           plugins/GodotOpenXRMeta=true
           plugins/GodotOpenXRPico=false
-          xr_features/enable_meta_plugin=true
           xr_features/hand_tracking=0
-          xr_features/hand_tracking_frequency=0
-          xr_features/hand_tracking_version=0
           xr_features/passthrough=0
-          meta_xr_features/hand_tracking=0
-          meta_xr_features/hand_tracking_frequency=0
-          meta_xr_features/passthrough=0
           screen/immersive_mode=true
-          screen/support_small=true
-          screen/support_normal=true
-          screen/support_large=true
-          screen/support_xlarge=true
           EOF
 
-      - name: Projeyi ice aktar ve eklentiyi dogrula
+      - name: Projeyi ice aktar ve kaynaklari dogrula
         shell: bash
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
         run: |
-          GODOT="$HOME/godot-bin/Godot_v4.3-stable_linux.x86_64"
-          "$GODOT" --headless --editor --path StereoViewer --import --quit-after 20
+          GODOT="$HOME/godot-bin/Godot_v4.4.1-stable_linux.x86_64"
+          "$GODOT" --headless --editor --path StereoViewer --import --quit-after 25
           test -f StereoViewer/addons/godotopenxrvendors/meta/plugin.gdextension
           find StereoViewer/.godot/imported -name 'icon.svg-*.ctex' -print -quit | grep -q .
 
@@ -529,13 +510,9 @@ jobs:
         shell: bash
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/.android/debug.keystore
-          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
-          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
           set -o pipefail
-          mkdir -p StereoViewer/build
-          GODOT="$HOME/godot-bin/Godot_v4.3-stable_linux.x86_64"
+          GODOT="$HOME/godot-bin/Godot_v4.4.1-stable_linux.x86_64"
           "$GODOT" \
             --headless \
             --verbose \
@@ -545,36 +522,44 @@ jobs:
             2>&1 | tee StereoViewer/build/export.log
           test -s StereoViewer/build/StereoViewer-Quest.apk
 
-      - name: APK icindeki Quest OpenXR bilesenlerini dogrula
+      - name: APK paketini imzayi ve Quest bilesenlerini dogrula
         shell: bash
         run: |
           set -euo pipefail
           APK="StereoViewer/build/StereoViewer-Quest.apk"
+          APKSIGNER="${ANDROID_SDK_ROOT}/build-tools/35.0.1/apksigner"
+          AAPT="${ANDROID_SDK_ROOT}/build-tools/35.0.1/aapt"
 
-          # Meta vendor eklentisinin ARM64 kutuphanesi APK'ya girmis olmali.
-          unzip -l "$APK" | tee StereoViewer/build/apk-contents.txt
+          "$APKSIGNER" verify --verbose --print-certs "$APK" \
+            | tee StereoViewer/build/signature.txt
+          grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' \
+            StereoViewer/build/signature.txt
+
+          unzip -l "$APK" > StereoViewer/build/apk-contents.txt
           grep -Eiq 'lib/arm64-v8a/.*(openxr|godotopenxrmeta).*\.so' \
             StereoViewer/build/apk-contents.txt
 
-          # Paket Quest tarafindan OpenXR/VR uygulamasi olarak taninmali.
-          AAPT="${ANDROID_SDK_ROOT}/build-tools/34.0.0/aapt"
           "$AAPT" dump xmltree "$APK" AndroidManifest.xml \
             > StereoViewer/build/manifest.txt
           grep -q 'com.oculus.intent.category.VR' StereoViewer/build/manifest.txt
+          grep -q 'StereoViewer' StereoViewer/build/manifest.txt
 
       - name: Hata gunlugunu yayinla
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: StereoViewer-export-error-log
-          path: StereoViewer/build/export.log
+          path: |
+            StereoViewer/build/export.log
+            StereoViewer/build/signature.txt
+            StereoViewer/build/manifest.txt
           if-no-files-found: warn
           retention-days: 7
 
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.2.0-APK
+          name: StereoViewer-Quest-v0.3.0-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
