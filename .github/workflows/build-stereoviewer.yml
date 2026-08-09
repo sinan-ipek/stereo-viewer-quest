@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.4.3 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.4.4 teshis surumu tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.4.3"
+          config/version="0.4.4-diagnostic"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -175,6 +175,14 @@ jobs:
           modulate = Color(0.62, 0.82, 1, 1)
           text = "A: Fotoğraf seç"
 
+          [node name="Diagnostic" type="Label3D" parent="XROrigin3D/Display"]
+          position = Vector3(0, -0.72, 0.035)
+          pixel_size = 0.00155
+          font_size = 24
+          outline_size = 8
+          modulate = Color(1, 0.92, 0.25, 1)
+          text = "TEŞHİS BAŞLATILIYOR"
+
           [node name="LeftController" type="XRController3D" parent="XROrigin3D"]
           tracker = &"left_hand"
 
@@ -186,7 +194,7 @@ jobs:
           EOF
 
           # Eski deneme kodu yalnızca geçmiş karşılaştırması için geçici dosyaya
-          # yazılır; projeye dahil edilmez. Aktif main.gd aşağıdaki v0.4.3 bloğudur.
+          # yazılır; projeye dahil edilmez. Aktif main.gd aşağıdaki v0.4.4 bloğudur.
           cat > /tmp/stereoviewer-obsolete-main.gd <<'EOF'
           extends Node3D
 
@@ -650,7 +658,7 @@ jobs:
                   swap_stereo_eyes()
           EOF
 
-          # v0.4.3: Tek-fotograf secicisi + uygulama icinde onceki/sonraki
+          # v0.4.4: Tek-fotograf secicisi + gorunur OpenXR teshis paneli.
           # fotograf gecisi. Bu blok onceki deneme akisini tamamen degistirir.
           cat > StereoViewer/main.gd <<'EOF'
           extends Node3D
@@ -686,6 +694,8 @@ jobs:
           @onready var info_panel: Node3D = $XROrigin3D/Display/InfoPanel
           @onready var message: Label3D = $XROrigin3D/Display/InfoPanel/Message
           @onready var help: Label3D = $XROrigin3D/Display/InfoPanel/Help
+          @onready var right_controller: XRController3D = $XROrigin3D/RightController
+          @onready var diagnostic: Label3D = $XROrigin3D/Display/Diagnostic
 
           var current_texture: ImageTexture
           var current_uri := ""
@@ -702,11 +712,19 @@ jobs:
           var b_was_down := false
           var controls_armed := false
           var horizontal_latched := false
+          var frame_count := 0
+          var resume_count := 0
+          var focus_in_count := 0
+          var focus_out_count := 0
+          var controller_signal_count := 0
+          var last_controller_signal := "-"
+          var last_notification := "READY"
 
           func _ready() -> void:
               process_mode = Node.PROCESS_MODE_ALWAYS
               set_process(true)
               start_xr()
+              right_controller.button_pressed.connect(_on_diagnostic_button_pressed)
               await get_tree().process_frame
               await get_tree().process_frame
               recenter_display()
@@ -891,6 +909,8 @@ jobs:
 
           func _notification(what: int) -> void:
               if what == NOTIFICATION_APPLICATION_RESUMED:
+                  resume_count += 1
+                  last_notification = "RESUMED"
                   get_tree().paused = false
                   # Android seçicisi OpenXR izleyici nesnesini yenileyebilir.
                   # Giriş her kare XRServer'dan okunduğu için düğüm söküp takma
@@ -899,6 +919,12 @@ jobs:
                   a_was_down = false
                   b_was_down = false
                   horizontal_latched = false
+              elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
+                  focus_in_count += 1
+                  last_notification = "FOCUS_IN"
+              elif what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+                  focus_out_count += 1
+                  last_notification = "FOCUS_OUT"
 
           func recenter_display() -> void:
               var camera_transform := xr_camera.transform
@@ -912,8 +938,11 @@ jobs:
               display.look_at(camera_transform.origin, Vector3.UP, true)
 
           func _process(delta: float) -> void:
+              frame_count += 1
               var a_down := controller_button_down(A_BUTTON_NAMES)
               var b_down := controller_button_down(B_BUTTON_NAMES)
+              var diagnostic_stick := controller_stick()
+              update_diagnostic(a_down, b_down, diagnostic_stick)
               if not controls_armed:
                   if not a_down and not b_down:
                       controls_armed = true
@@ -966,6 +995,36 @@ jobs:
                   if value is Vector2 and value.length_squared() > 0.0001:
                       return value
               return Vector2.ZERO
+
+          func _on_diagnostic_button_pressed(button_name: String) -> void:
+              controller_signal_count += 1
+              last_controller_signal = button_name
+
+          func update_diagnostic(a_down: bool, b_down: bool, stick: Vector2) -> void:
+              var tracker := XRServer.get_tracker(&"right_hand")
+              var xr := XRServer.find_interface("OpenXR")
+              var xr_ok := xr != null and xr.is_initialized()
+              var tracker_ok := tracker != null
+              var node_ok := right_controller.get_is_active()
+              diagnostic.text = (
+                  "TEŞHİS v0.4.4  KARE:%d\n" +
+                  "XR:%s  TRACKER:%s  NODE:%s  PICKER:%s\n" +
+                  "A:%s  B:%s  STICK:(%.2f, %.2f)\n" +
+                  "SİNYAL:%d [%s]  SON:%s\n" +
+                  "RESUME:%d  FOCUS IN/OUT:%d/%d"
+              ) % [
+                  frame_count,
+                  "VAR" if xr_ok else "YOK",
+                  "VAR" if tracker_ok else "YOK",
+                  "AKTİF" if node_ok else "PASİF",
+                  "AÇIK" if picker_open else "KAPALI",
+                  "1" if a_down else "0",
+                  "1" if b_down else "0",
+                  stick.x, stick.y,
+                  controller_signal_count, last_controller_signal,
+                  last_notification,
+                  resume_count, focus_in_count, focus_out_count
+              ]
 
           func request_photo_picker() -> void:
               var now := Time.get_ticks_msec()
@@ -1081,8 +1140,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=16
-          version/name="0.4.3"
+          version/code=17
+          version/name="0.4.4-diagnostic"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -1242,7 +1301,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.4.3-APK
+          name: StereoViewer-Quest-v0.4.4-Diagnostic-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
