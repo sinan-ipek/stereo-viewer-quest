@@ -424,26 +424,6 @@ jobs:
           touch StereoViewer/android/.gdignore
           test -f StereoViewer/android/build/build.gradle
 
-      - name: Quest VR manifest tanimini ekle
-        shell: bash
-        run: |
-          set -euo pipefail
-          MANIFEST="StereoViewer/android/build/AndroidManifest.xml"
-          test -f "$MANIFEST"
-
-          if ! grep -Fq 'com.oculus.intent.category.VR' "$MANIFEST"; then
-            sed -i \
-              '/android.intent.action.MAIN/a\            <category android:name="com.oculus.intent.category.VR" />' \
-              "$MANIFEST"
-          fi
-
-          if ! grep -Fq 'com.oculus.intent.category.VR' "$MANIFEST"; then
-            echo "HATA: Quest VR kategorisi AndroidManifest.xml dosyasina eklenemedi."
-            exit 1
-          fi
-
-          echo "TAMAM: Quest VR kategorisi Android derleme manifestine eklendi."
-
       - name: Kalici uygulama imzasini yaz ve dogrula
         shell: bash
         run: |
@@ -549,7 +529,7 @@ jobs:
             2>&1 | tee StereoViewer/build/export.log
           test -s StereoViewer/build/StereoViewer-Quest.apk
 
-      - name: APK paketini imzayi ve Quest bilesenlerini dogrula
+      - name: APK paketini ve imzayi dogrula
         shell: bash
         run: |
           set -euo pipefail
@@ -581,10 +561,6 @@ jobs:
           }
 
           require_text \
-            'com.oculus.intent.category.VR' \
-            StereoViewer/build/manifest.txt \
-            'Quest VR uygulama kategorisi'
-          require_text \
             "package: name='com.stereoguide.viewer'" \
             StereoViewer/build/badging.txt \
             'dogru Android paket adi'
@@ -593,7 +569,7 @@ jobs:
             StereoViewer/build/badging.txt \
             'StereoViewer uygulama adi'
 
-          echo "APK imzasi, paket adi ve Quest VR tanimi basariyla dogrulandi."
+          echo "APK imzasi, paket adi ve uygulama adi basariyla dogrulandi."
 
       - name: Hata gunlugunu yayinla
         if: failure()
