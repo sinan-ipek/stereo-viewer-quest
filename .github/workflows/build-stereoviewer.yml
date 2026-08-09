@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.4.6 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.4.7 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.4.6"
+          config/version="0.4.7"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -650,14 +650,14 @@ jobs:
                   swap_stereo_eyes()
           EOF
 
-          # v0.4.6: Tek-fotograf secicisi. Android secicisinden donuste eski
-          # XR oturumu kontrollu kapatilir, sonra Activity bir kez yenilenir.
+          # v0.4.7: v0.4.6'daki guvensiz OpenXR kapat-ac islemi kaldirildi.
+          # Godot'un baslattigi XR oturumu acilista korunur; SAF donusunde
+          # yalnizca Android Activity bir kez yenilenir.
           cat > StereoViewer/main.gd <<'EOF'
           extends Node3D
 
           const XR_RENDER_SCALE := 1.25
           const BUTTON_COOLDOWN_MS := 350
-          const XR_SHUTDOWN_FRAMES := 8
           const XR_STARTUP_FRAMES := 12
           const CONTROLLER_STABLE_FRAMES := 12
           const STICK_DEADZONE := 0.28
@@ -716,21 +716,16 @@ jobs:
               set_process(true)
               controls_armed = false
               xr_ready = false
-              await start_clean_xr_session()
+              await start_xr_session()
               recenter_display()
               if not load_pending_photo():
                   show_welcome()
 
-          func start_clean_xr_session() -> void:
+          func start_xr_session() -> void:
               var xr := XRServer.find_interface("OpenXR")
-              # Activity yeniden olusturuldugunda ayni Android surecinde kalir.
-              # Eski oturum yarim acik kalmissa onu kullanmak yerine daima temizle.
-              get_viewport().use_xr = false
-              if xr != null and xr.is_initialized():
-                  xr.uninitialize()
-                  for frame in range(XR_SHUTDOWN_FRAMES):
-                      await get_tree().process_frame
-              if xr != null:
+              # Godot/Quest XR oturumunu uygulama acilirken zaten kurabilir.
+              # Calisan oturumu kapatmak uygulamanin hic gorunmemesine yol acar.
+              if xr != null and not xr.is_initialized():
                   xr.render_target_size_multiplier = XR_RENDER_SCALE
                   xr.initialize()
               if xr == null or not xr.is_initialized():
@@ -803,15 +798,8 @@ jobs:
                   photo.visible = false
                   message.text = "Fotoğraf açılıyor..."
                   help.text = ""
-                  # Sistem secicisi donuste Quest'in OpenXR girdisini dondurur.
-                  # Activity'yi eski oturum acikken yenilemek iki oturumun
-                  # cakismasina yol aciyordu. Once render ve XR tamamen kapanir.
-                  get_viewport().use_xr = false
-                  var xr := XRServer.find_interface("OpenXR")
-                  if xr != null and xr.is_initialized():
-                      xr.uninitialize()
-                  for frame in range(XR_SHUTDOWN_FRAMES):
-                      await get_tree().process_frame
+                  # v0.4.5'te calistigi dogrulanan yol: secilen URI saklanir ve
+                  # Activity yenilenir. OpenXR'i GDScript'ten kapatmak yoktur.
                   var activity = android_runtime.getActivity()
                   var refresh_callable := func():
                       activity.recreate()
@@ -1156,8 +1144,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=19
-          version/name="0.4.6"
+          version/code=20
+          version/name="0.4.7"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -1317,7 +1305,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.4.6-APK
+          name: StereoViewer-Quest-v0.4.7-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
