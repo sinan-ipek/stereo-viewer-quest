@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.3.4 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.3.5 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.3.4"
+          config/version="0.3.5"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -490,18 +490,6 @@ jobs:
             -storepass StereoGuide2026 \
             -alias stereoguide >/dev/null
 
-      - name: Godot Android editor ayarlarini yaz
-        shell: bash
-        run: |
-          mkdir -p "$HOME/.config/godot"
-          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
-          [gd_resource format=3]
-
-          [resource]
-          export/android/android_sdk_path = "${ANDROID_SDK_ROOT}"
-          export/android/java_sdk_path = "${JAVA_HOME_17_X64}"
-          EOF
-
       - name: Tam Quest export presetini yaz
         shell: bash
         run: |
@@ -529,8 +517,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=7
-          version/name="0.3.4"
+          version/code=8
+          version/name="0.3.5"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -580,7 +568,8 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           GODOT="$HOME/godot-bin/Godot_v4.6-stable_linux.x86_64"
-          "$GODOT" --headless --editor --path StereoViewer --import --quit-after 25
+          rm -f "$HOME/.config/godot/editor_settings-4.tres"
+          "$GODOT" --headless --path StereoViewer --import --quit-after 60
           test -f StereoViewer/addons/godotopenxrvendors/plugin.gdextension
           test -f StereoViewer/addons/godotopenxrvendors/.bin/android/debug/godotopenxr-meta-debug.aar
           find StereoViewer/.godot/imported -name 'icon.svg-*.ctex' -print -quit | grep -q .
@@ -688,7 +677,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.3.4-APK
+          name: StereoViewer-Quest-v0.3.5-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
