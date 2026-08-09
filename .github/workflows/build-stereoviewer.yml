@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.4.2 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.4.3 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.4.2"
+          config/version="0.4.3"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -175,15 +175,6 @@ jobs:
           modulate = Color(0.62, 0.82, 1, 1)
           text = "A: Fotoğraf seç"
 
-          [node name="PhotoStatus" type="Label3D" parent="XROrigin3D/Display"]
-          visible = false
-          position = Vector3(0, -1.02, 0.02)
-          pixel_size = 0.0022
-          font_size = 22
-          outline_size = 6
-          modulate = Color(0.82, 0.9, 1, 1)
-          text = "A: Başka fotoğraf   B: Gözleri değiştir   Sağ çubuk: Büyüt / küçült"
-
           [node name="LeftController" type="XRController3D" parent="XROrigin3D"]
           tracker = &"left_hand"
 
@@ -195,7 +186,7 @@ jobs:
           EOF
 
           # Eski deneme kodu yalnızca geçmiş karşılaştırması için geçici dosyaya
-          # yazılır; projeye dahil edilmez. Aktif main.gd aşağıdaki v0.4.2 bloğudur.
+          # yazılır; projeye dahil edilmez. Aktif main.gd aşağıdaki v0.4.3 bloğudur.
           cat > /tmp/stereoviewer-obsolete-main.gd <<'EOF'
           extends Node3D
 
@@ -659,7 +650,7 @@ jobs:
                   swap_stereo_eyes()
           EOF
 
-          # v0.4.2: Tek-fotograf secicisi + uygulama icinde onceki/sonraki
+          # v0.4.3: Tek-fotograf secicisi + uygulama icinde onceki/sonraki
           # fotograf gecisi. Bu blok onceki deneme akisini tamamen degistirir.
           cat > StereoViewer/main.gd <<'EOF'
           extends Node3D
@@ -695,9 +686,6 @@ jobs:
           @onready var info_panel: Node3D = $XROrigin3D/Display/InfoPanel
           @onready var message: Label3D = $XROrigin3D/Display/InfoPanel/Message
           @onready var help: Label3D = $XROrigin3D/Display/InfoPanel/Help
-          @onready var photo_status: Label3D = $XROrigin3D/Display/PhotoStatus
-          @onready var left_controller: XRController3D = $XROrigin3D/LeftController
-          @onready var right_controller: XRController3D = $XROrigin3D/RightController
 
           var current_texture: ImageTexture
           var current_uri := ""
@@ -719,8 +707,6 @@ jobs:
               process_mode = Node.PROCESS_MODE_ALWAYS
               set_process(true)
               start_xr()
-              left_controller.button_pressed.connect(_on_left_button_pressed)
-              right_controller.button_pressed.connect(_on_right_button_pressed)
               await get_tree().process_frame
               await get_tree().process_frame
               recenter_display()
@@ -741,7 +727,6 @@ jobs:
 
           func show_welcome() -> void:
               photo.visible = false
-              photo_status.visible = false
               info_panel.visible = true
               message.text = "A düğmesine basarak\nbir SBS fotoğraf seçin."
               help.text = "A: Fotoğraf tarayıcısını aç"
@@ -781,7 +766,6 @@ jobs:
               horizontal_latched = false
               if not status or paths.is_empty():
                   restore_current_view_or_welcome()
-                  rebind_controllers.call_deferred()
                   return
               current_uri = paths[0]
               var android_runtime := Engine.get_singleton("AndroidRuntime")
@@ -789,7 +773,6 @@ jobs:
                   android_runtime.updatePersistableUriPermission(current_uri, true)
               if load_photo(current_uri):
                   rebuild_photo_list(current_name)
-              rebind_controllers.call_deferred()
 
           func rebuild_photo_list(selected_name: String) -> void:
               photo_files.clear()
@@ -882,23 +865,16 @@ jobs:
               photo.mesh.size = Vector2(height * eye_aspect, height)
               info_panel.visible = false
               photo.visible = true
-              photo_status.visible = true
-              update_status()
               return true
 
           func show_adjacent_photo(direction: int) -> void:
               if photo_files.is_empty() or current_index < 0:
-                  show_temporary_notice("Bu fotoğrafın klasör listesine erişilemiyor.\nA ile başka bir fotoğraf seçebilirsiniz.")
                   return
               var next_index := current_index + direction
               if next_index < 0 or next_index >= photo_files.size():
-                  show_temporary_notice("Klasörün %s fotoğrafındasınız." % ("ilk" if direction < 0 else "son"))
                   return
               if load_photo(photo_files[next_index]):
                   current_index = next_index
-
-          func show_temporary_notice(text: String) -> void:
-              photo_status.text = text
 
           func restore_current_view_or_welcome() -> void:
               if current_texture == null:
@@ -906,12 +882,9 @@ jobs:
               else:
                   info_panel.visible = false
                   photo.visible = true
-                  photo_status.visible = true
-                  update_status()
 
           func show_error(text: String) -> void:
               photo.visible = false
-              photo_status.visible = false
               info_panel.visible = true
               message.text = text
               help.text = "A: Fotoğraf tarayıcısını aç"
@@ -919,20 +892,13 @@ jobs:
           func _notification(what: int) -> void:
               if what == NOTIFICATION_APPLICATION_RESUMED:
                   get_tree().paused = false
+                  # Android seçicisi OpenXR izleyici nesnesini yenileyebilir.
+                  # Giriş her kare XRServer'dan okunduğu için düğüm söküp takma
+                  # yapılmaz; yalnızca kenar durumları yeniden kurulur.
                   controls_armed = false
-                  rebind_controllers.call_deferred()
-
-          func rebind_controllers() -> void:
-              await get_tree().process_frame
-              await get_tree().process_frame
-              left_controller.tracker = &""
-              right_controller.tracker = &""
-              await get_tree().process_frame
-              left_controller.tracker = &"left_hand"
-              right_controller.tracker = &"right_hand"
-              a_was_down = false
-              b_was_down = false
-              controls_armed = false
+                  a_was_down = false
+                  b_was_down = false
+                  horizontal_latched = false
 
           func recenter_display() -> void:
               var camera_transform := xr_camera.transform
@@ -978,23 +944,28 @@ jobs:
                       MAX_DISTANCE
                   )
                   recenter_display()
-                  update_status()
 
           func controller_button_down(names: Array) -> bool:
+              var tracker := XRServer.get_tracker(&"right_hand")
+              if tracker == null:
+                  return false
               for button_name in names:
-                  if right_controller.is_button_pressed(button_name):
+                  var value = tracker.get_input(button_name)
+                  if value is bool and value:
+                      return true
+                  if value is float and value > 0.5:
                       return true
               return false
 
           func controller_stick() -> Vector2:
+              var tracker := XRServer.get_tracker(&"right_hand")
+              if tracker == null:
+                  return Vector2.ZERO
               for stick_name in STICK_NAMES:
-                  var value := right_controller.get_vector2(stick_name)
-                  if value.length_squared() > 0.0001:
+                  var value = tracker.get_input(stick_name)
+                  if value is Vector2 and value.length_squared() > 0.0001:
                       return value
               return Vector2.ZERO
-
-          func update_status() -> void:
-              photo_status.text = "A: Fotoğraf seç   ←/→: Önceki/sonraki   ↑/↓: Ekranı yaklaştır/uzaklaştır   B: Gözleri değiştir\n%s" % current_name
 
           func request_photo_picker() -> void:
               var now := Time.get_ticks_msec()
@@ -1011,21 +982,6 @@ jobs:
               swapped = not swapped
               var material := photo.get_active_material(0) as ShaderMaterial
               material.set_shader_parameter("swap_eyes", swapped)
-              update_status()
-
-          func _on_right_button_pressed(button_name: String) -> void:
-              # Fotoğraf henüz yokken sağ kumandadan gelen ilk gerçek düğme
-              # olayı fotoğraf seçicisini açar. Böylece Godot/Meta sürümünün
-              # A eylemine verdiği ad değişse bile ilk A basışı kaybolmaz.
-              if current_texture == null and not picker_open:
-                  request_photo_picker()
-              elif button_name in A_BUTTON_NAMES:
-                  request_photo_picker()
-              elif button_name in B_BUTTON_NAMES:
-                  swap_stereo_eyes()
-
-          func _on_left_button_pressed(_button_name: String) -> void:
-              pass
           EOF
 
           test -s StereoViewer/project.godot
@@ -1125,8 +1081,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=15
-          version/name="0.4.2"
+          version/code=16
+          version/name="0.4.3"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -1286,7 +1242,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.4.2-APK
+          name: StereoViewer-Quest-v0.4.3-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
