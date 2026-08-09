@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.3.7 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.3.8 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.3.7"
+          config/version="0.3.8"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -203,6 +203,10 @@ jobs:
           const BUTTON_COOLDOWN_MS := 350
           const XR_RENDER_SCALE := 1.25
 
+          const A_BUTTON_NAMES := [&"ax_button", &"a_button", &"primary_click"]
+          const B_BUTTON_NAMES := [&"by_button", &"b_button", &"secondary_click"]
+          const STICK_NAMES := [&"primary", &"thumbstick", &"joystick"]
+
           @onready var xr_origin: XROrigin3D = $XROrigin3D
           @onready var xr_camera: XRCamera3D = $XROrigin3D/XRCamera3D
           @onready var display: Node3D = $XROrigin3D/Display
@@ -226,8 +230,13 @@ jobs:
           var wait_for_a_release := false
           var last_a_action_ms := -1000
           var last_b_action_ms := -1000
+          var a_was_down := false
+          var b_was_down := false
+          var controls_armed := false
+          var rebind_generation := 0
 
           func _ready() -> void:
+              process_mode = Node.PROCESS_MODE_ALWAYS
               start_xr()
               left_controller.button_pressed.connect(_on_left_button_pressed)
               right_controller.button_pressed.connect(_on_right_button_pressed)
@@ -235,6 +244,7 @@ jobs:
               await get_tree().process_frame
               recenter_display()
               show_welcome()
+              rebind_controllers()
 
           func start_xr() -> void:
               var xr := XRServer.find_interface("OpenXR")
@@ -290,6 +300,9 @@ jobs:
               picker_open = false
               application_was_paused = false
               wait_for_a_release = true
+              # Bazı Quest sürümlerinde callback, APPLICATION_RESUMED bildiriminden
+              # sonra gelir. Bu yüzden izleyicileri callback'te de yeniden bağla.
+              rebind_controllers.call_deferred()
               if not status or paths.is_empty():
                   if current_texture == null:
                       show_welcome()
@@ -362,11 +375,32 @@ jobs:
               if what == NOTIFICATION_APPLICATION_PAUSED and picker_open:
                   application_was_paused = true
               elif what == NOTIFICATION_APPLICATION_RESUMED and picker_open:
+                  get_tree().paused = false
+                  rebind_controllers.call_deferred()
                   wait_for_a_release = true
                   # Android seçicisinin geri çağrısına birkaç kare süre tanı.
                   # Geri çağrı gelmezse A düğmesinin kalıcı kilitlenmesini önle.
                   var request_at_resume := picker_request_id
                   unlock_picker_after_resume.call_deferred(request_at_resume)
+              elif what == NOTIFICATION_APPLICATION_RESUMED:
+                  get_tree().paused = false
+                  rebind_controllers.call_deferred()
+
+          func rebind_controllers() -> void:
+              # Quest'in Android dosya seçicisi OpenXR oturumunu durdurup yeniden
+              # kurabilir. XRController3D düğümlerini yeni izleyicilere yeniden bağla.
+              rebind_generation += 1
+              var generation := rebind_generation
+              left_controller.tracker = &""
+              right_controller.tracker = &""
+              await get_tree().process_frame
+              if generation != rebind_generation:
+                  return
+              left_controller.tracker = &"left_hand"
+              right_controller.tracker = &"right_hand"
+              a_was_down = false
+              b_was_down = false
+              controls_armed = false
 
           func unlock_picker_after_resume(request_at_resume: int) -> void:
               await get_tree().create_timer(1.0).timeout
@@ -396,17 +430,49 @@ jobs:
               display.look_at(camera_transform.origin, Vector3.UP, true)
 
           func _process(delta: float) -> void:
+              # Sinyaller dosya seçiciden sonra Quest'te kaybolabildiği için bütün
+              # sağ kumanda kontrollerini her kare doğrudan OpenXR durumundan oku.
+              var a_down := controller_button_down(A_BUTTON_NAMES)
+              var b_down := controller_button_down(B_BUTTON_NAMES)
+
+              # Seçiciden dönerken basılı kalan A yeni bir seçim başlatmasın.
+              if not controls_armed:
+                  if not a_down and not b_down:
+                      controls_armed = true
+                  a_was_down = a_down
+                  b_was_down = b_down
+              else:
+                  if a_down and not a_was_down:
+                      request_photo_picker()
+                  if b_down and not b_was_down:
+                      swap_stereo_eyes()
+                  a_was_down = a_down
+                  b_was_down = b_down
+
               if current_texture == null or picker_open:
                   return
-              var stick := right_controller.get_vector2("primary")
-              if abs(stick.y) > 0.15:
+              var stick := controller_stick()
+              if abs(stick.y) > 0.18:
                   photo_scale = clampf(
-                      photo_scale + stick.y * ZOOM_SPEED * delta,
+                      photo_scale - stick.y * ZOOM_SPEED * delta,
                       MIN_PHOTO_SCALE,
                       MAX_PHOTO_SCALE
                   )
                   apply_photo_scale()
                   update_status()
+
+          func controller_button_down(names: Array) -> bool:
+              for button_name in names:
+                  if right_controller.is_button_pressed(button_name):
+                      return true
+              return false
+
+          func controller_stick() -> Vector2:
+              for stick_name in STICK_NAMES:
+                  var value := right_controller.get_vector2(stick_name)
+                  if value.length_squared() > 0.0001:
+                      return value
+              return Vector2.ZERO
 
           func apply_photo_scale() -> void:
               photo.mesh.size = base_photo_size * photo_scale
@@ -432,11 +498,10 @@ jobs:
               update_status()
 
           func _on_right_button_pressed(button_name: String) -> void:
-              if button_name == "ax_button":
-                  wait_for_a_release = false
-                  request_photo_picker()
-              elif button_name == "by_button":
-                  swap_stereo_eyes()
+              # Asıl okuma _process içindeki durum/kenar denetimidir. Bu sinyal
+              # yalnızca ilk açılışta kumanda durumunu daha hızlı etkinleştirir.
+              if button_name in A_BUTTON_NAMES or button_name in B_BUTTON_NAMES:
+                  controls_armed = true
 
           func _on_left_button_pressed(_button_name: String) -> void:
               pass
@@ -545,8 +610,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=10
-          version/name="0.3.7"
+          version/code=11
+          version/name="0.3.8"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -585,6 +650,7 @@ jobs:
           meta_xr_features/quest_2_support=true
           meta_xr_features/quest_3_support=true
           meta_xr_features/quest_pro_support=true
+          meta_xr_features/supported_devices="quest2|questpro|quest3|quest3s"
           meta_xr_features/use_anchor_api=false
           meta_xr_features/use_scene_api=false
           screen/immersive_mode=true
@@ -705,7 +771,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.3.7-APK
+          name: StereoViewer-Quest-v0.3.8-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
