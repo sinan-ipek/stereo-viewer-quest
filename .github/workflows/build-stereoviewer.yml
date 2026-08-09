@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.3.2 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.3.3 tam proje kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.3.1"
+          config/version="0.3.3"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.4", "GL Compatibility")
@@ -217,6 +217,8 @@ jobs:
           var swapped := false
           var viewing_distance := 2.4
           var picker_open := false
+          var picker_request_id := 0
+          var application_was_paused := false
 
           func _ready() -> void:
               start_xr()
@@ -253,6 +255,7 @@ jobs:
                   show_error("Sistem dosya seçicisi açılamadı.")
                   return
               picker_open = true
+              picker_request_id += 1
               message.text = "Fotoğraf seçici açılıyor..."
               help.text = "Bir JPG, PNG veya WEBP dosyası seçin."
               var filters := PackedStringArray([
@@ -273,6 +276,7 @@ jobs:
 
           func _on_photo_selected(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
               picker_open = false
+              application_was_paused = false
               if not status or paths.is_empty():
                   if current_texture == null:
                       show_welcome()
@@ -282,12 +286,25 @@ jobs:
           func load_photo_from_uri(uri: String) -> void:
               var file := FileAccess.open(uri, FileAccess.READ)
               if file == null:
-                  show_error("Seçilen fotoğraf okunamadı.")
+                  show_error("Seçilen fotoğraf açılamadı.\nA ile başka bir fotoğraf seçebilirsiniz.")
                   return
-              var bytes := file.get_buffer(file.get_length())
+
+              # Android SAF/content:// kaynaklarında dosya boyutu -1 veya 0
+              # dönebilir. Bu nedenle akışı sabit parçalar halinde sonuna kadar oku.
+              var bytes := PackedByteArray()
+              var known_length := file.get_length()
+              if known_length > 0:
+                  bytes = file.get_buffer(known_length)
+              else:
+                  const READ_CHUNK_SIZE := 1024 * 1024
+                  while not file.eof_reached():
+                      var chunk := file.get_buffer(READ_CHUNK_SIZE)
+                      if chunk.is_empty():
+                          break
+                      bytes.append_array(chunk)
               file.close()
               if bytes.is_empty():
-                  show_error("Seçilen fotoğraf boş veya erişilemiyor.")
+                  show_error("Fotoğraf verisi okunamadı.\nA ile yeniden deneyin.")
                   return
 
               var image := Image.new()
@@ -316,6 +333,23 @@ jobs:
               photo.visible = true
               photo_status.visible = true
               update_status()
+
+          func _notification(what: int) -> void:
+              if what == NOTIFICATION_APPLICATION_PAUSED and picker_open:
+                  application_was_paused = true
+              elif what == NOTIFICATION_APPLICATION_RESUMED and picker_open:
+                  # Android seçicisinin geri çağrısına birkaç kare süre tanı.
+                  # Geri çağrı gelmezse A düğmesinin kalıcı kilitlenmesini önle.
+                  var request_at_resume := picker_request_id
+                  unlock_picker_after_resume.call_deferred(request_at_resume)
+
+          func unlock_picker_after_resume(request_at_resume: int) -> void:
+              await get_tree().create_timer(1.0).timeout
+              if picker_open and picker_request_id == request_at_resume:
+                  picker_open = false
+                  application_was_paused = false
+                  if current_texture == null:
+                      show_error("Fotoğraf alınamadı.\nA ile yeniden seçim yapın.")
 
           func show_error(text: String) -> void:
               photo.visible = false
@@ -480,8 +514,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=5
-          version/name="0.3.2"
+          version/code=6
+          version/name="0.3.3"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -639,7 +673,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.3.2-APK
+          name: StereoViewer-Quest-v0.3.3-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
