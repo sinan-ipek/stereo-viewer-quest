@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.4.8 tam proje kaynaklarini yaz
+      - name: StereoViewer v0.5.0 kararlilik testi kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.4.8"
+          config/version="0.5.0"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -102,10 +102,24 @@ jobs:
           }
           EOF
 
+          cat > StereoViewer/thumbnail.gdshader <<'EOF'
+          shader_type spatial;
+          render_mode unshaded, cull_disabled;
+
+          uniform sampler2D thumbnail_photo : source_color, repeat_disable, filter_linear;
+
+          void fragment() {
+              // Galeride her iki goze de SBS fotografin sol karesini goster.
+              // Boylece kucuk onizleme tek, normal bir fotograf gibi gorunur.
+              vec2 thumbnail_uv = vec2(UV.x * 0.5, UV.y);
+              ALBEDO = texture(thumbnail_photo, thumbnail_uv).rgb;
+          }
+          EOF
+
           cat > StereoViewer/Main.tscn <<'EOF'
           [gd_scene load_steps=7 format=3]
 
-          [ext_resource path="res://main.gd" type="Script" id="1"]
+          [ext_resource path="res://baseline.gd" type="Script" id="1"]
           [ext_resource path="res://stereo.gdshader" type="Shader" id="2"]
 
           [sub_resource type="ShaderMaterial" id="StereoMaterial"]
@@ -173,7 +187,32 @@ jobs:
           font_size = 22
           outline_size = 5
           modulate = Color(0.62, 0.82, 1, 1)
-          text = "A: Fotoğraf seç"
+          text = "A: VR galerisini aç"
+
+          [node name="Gallery" type="Node3D" parent="XROrigin3D/Display"]
+          visible = false
+
+          [node name="Background" type="MeshInstance3D" parent="XROrigin3D/Display/Gallery"]
+          position = Vector3(0, 0, -0.03)
+          scale = Vector3(1.65, 1.08, 1)
+          mesh = SubResource("PanelMesh")
+
+          [node name="Title" type="Label3D" parent="XROrigin3D/Display/Gallery"]
+          position = Vector3(0, 0.53, 0)
+          pixel_size = 0.0025
+          font_size = 36
+          outline_size = 7
+          text = "Fotoğraf galerisi"
+
+          [node name="Content" type="Node3D" parent="XROrigin3D/Display/Gallery"]
+
+          [node name="Help" type="Label3D" parent="XROrigin3D/Display/Gallery"]
+          position = Vector3(0, -0.55, 0)
+          pixel_size = 0.0025
+          font_size = 21
+          outline_size = 5
+          modulate = Color(0.62, 0.82, 1, 1)
+          text = "Çubuk sağ/sol: seç     A: aç     B: geri"
 
           [node name="LeftController" type="XRController3D" parent="XROrigin3D"]
           tracker = &"left_hand"
@@ -185,902 +224,200 @@ jobs:
           current = false
           EOF
 
-          # Eski deneme kodu yalnızca geçmiş karşılaştırması için geçici dosyaya
-          # yazılır; projeye dahil edilmez. Aktif main.gd aşağıdaki v0.4.5 bloğudur.
-          cat > /tmp/stereoviewer-obsolete-main.gd <<'EOF'
+          # v0.5.0 yalnizca goruntu ve kumanda kararliligini sinar. Bu aktif
+          # kodda depolama, izin, galeri, Android Activity veya fotograf yoktur.
+          cat > StereoViewer/baseline.gd <<'EOF'
           extends Node3D
 
-          const MIN_PHOTO_SCALE := 0.45
-          const MAX_PHOTO_SCALE := 2.50
-          const ZOOM_SPEED := 1.15
-          const BUTTON_COOLDOWN_MS := 350
-          const XR_RENDER_SCALE := 1.25
-          const FOLDER_URI_FILE := "user://photo_folder_uri.txt"
-          const IMAGE_EXTENSIONS := ["jpg", "jpeg", "png", "webp"]
-
-          const A_BUTTON_NAMES := [&"ax_button", &"a_button", &"primary_click"]
-          const B_BUTTON_NAMES := [&"by_button", &"b_button", &"secondary_click"]
-          const STICK_NAMES := [&"primary", &"thumbstick", &"joystick"]
-
-          @onready var xr_origin: XROrigin3D = $XROrigin3D
-          @onready var xr_camera: XRCamera3D = $XROrigin3D/XRCamera3D
-          @onready var display: Node3D = $XROrigin3D/Display
-          @onready var photo: MeshInstance3D = $XROrigin3D/Display/Photo
-          @onready var info_panel: Node3D = $XROrigin3D/Display/InfoPanel
-          @onready var message: Label3D = $XROrigin3D/Display/InfoPanel/Message
-          @onready var help: Label3D = $XROrigin3D/Display/InfoPanel/Help
-          @onready var photo_status: Label3D = $XROrigin3D/Display/PhotoStatus
-          @onready var left_controller: XRController3D = $XROrigin3D/LeftController
-          @onready var right_controller: XRController3D = $XROrigin3D/RightController
-
-          var current_texture: ImageTexture
-          var current_name := ""
-          var swapped := false
-          var viewing_distance := 2.4
-          var photo_scale := 1.0
-          var base_photo_size := Vector2(3.2, 1.8)
-          var picker_open := false
-          var picker_request_id := 0
-          var application_was_paused := false
-          var wait_for_a_release := false
-          var last_a_action_ms := -1000
-          var last_b_action_ms := -1000
-          var a_was_down := false
-          var b_was_down := false
-          var controls_armed := false
-          var rebind_generation := 0
-          var xr_recovery_running := false
-          var xr_recovery_requested := false
-          var folder_uri := ""
-          var photo_files: Array[String] = []
-          var selected_file := 0
-          var library_open := false
-          var stick_was_active := false
-
-          func _ready() -> void:
-              process_mode = Node.PROCESS_MODE_ALWAYS
-              set_process(true)
-              set_process_input(true)
-              set_process_unhandled_input(true)
-              start_xr()
-              left_controller.button_pressed.connect(_on_left_button_pressed)
-              right_controller.button_pressed.connect(_on_right_button_pressed)
-              await get_tree().process_frame
-              await get_tree().process_frame
-              recenter_display()
-              load_saved_folder_uri()
-              show_welcome()
-              rebind_controllers()
-
-          func start_xr() -> void:
-              var xr := XRServer.find_interface("OpenXR")
-              if xr != null and not xr.is_initialized():
-                  # Fotoğraf, Quest'in varsayılan ara görüntüsünden %25 daha
-                  # yüksek çözünürlükte çizilir. Bu değer OpenXR başlamadan
-                  # önce ayarlanmak zorundadır.
-                  xr.render_target_size_multiplier = XR_RENDER_SCALE
-                  xr.initialize()
-              if xr == null or not xr.is_initialized():
-                  $FallbackCamera.current = true
-                  message.text = "OpenXR başlatılamadı."
-                  help.text = "Uygulamayı Quest içinde yeniden başlatın."
-                  return
-              get_viewport().use_xr = true
-              DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
-
-          func show_welcome() -> void:
-              photo.visible = false
-              photo_status.visible = false
-              info_panel.visible = true
-              if folder_uri.is_empty():
-                  message.text = "İlk kurulum\n\nA ile Download klasörünü seçin."
-                  help.text = "Klasörü bir kez seçtikten sonra uygulamayı yeniden açın."
-              else:
-                  message.text = "A düğmesine basarak\nfotoğraf listesini açın."
-                  help.text = "A: Fotoğraf listesi"
-
-          func load_saved_folder_uri() -> void:
-              if not FileAccess.file_exists(FOLDER_URI_FILE):
-                  return
-              var saved := FileAccess.get_file_as_string(FOLDER_URI_FILE).strip_edges()
-              if saved.begins_with("content://"):
-                  folder_uri = saved
-
-          func open_photo_picker() -> void:
-              if not folder_uri.is_empty():
-                  open_photo_library()
-                  return
-              if picker_open:
-                  return
-              if not DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
-                  show_error("Sistem dosya seçicisi açılamadı.")
-                  return
-              picker_open = true
-              picker_request_id += 1
-              message.text = "Fotoğraf seçici açılıyor..."
-              help.text = "Bir JPG, PNG veya WEBP dosyası seçin."
-              var filters := PackedStringArray([
-                  "*.jpg,*.jpeg,*.png,*.webp;Fotoğraflar;image/jpeg,image/png,image/webp"
-              ])
-              var result := DisplayServer.file_dialog_show(
-                  "SBS fotoğraf seç",
-                  "",
-                  "",
-                  false,
-                  DisplayServer.FILE_DIALOG_MODE_OPEN_DIR,
-                  filters,
-                  _on_photo_selected
-              )
-              if result != OK:
-                  picker_open = false
-                  show_error("Fotoğraf seçici başlatılamadı.")
-
-          func _on_photo_selected(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
-              # Callback hangi sonuçla dönerse dönsün A kilidini ilk iş kaldır.
-              picker_open = false
-              application_was_paused = false
-              wait_for_a_release = true
-              if not status or paths.is_empty():
-                  show_welcome()
-                  return
-              folder_uri = paths[0]
-              var android_runtime := Engine.get_singleton("AndroidRuntime")
-              if android_runtime != null and folder_uri.begins_with("content://"):
-                  android_runtime.updatePersistableUriPermission(folder_uri, true)
-              var saved := FileAccess.open(FOLDER_URI_FILE, FileAccess.WRITE)
-              if saved != null:
-                  saved.store_string(folder_uri)
-                  saved.close()
-              info_panel.visible = true
-              message.text = "Klasör kaydedildi."
-              help.text = "Kumandaların temiz başlaması için\nuygulamayı kapatıp bir kez yeniden açın."
-
-          func open_photo_library() -> void:
-              photo_files.clear()
-              var directory := DirAccess.open(folder_uri + "#")
-              if directory == null:
-                  folder_uri = ""
-                  DirAccess.remove_absolute(ProjectSettings.globalize_path(FOLDER_URI_FILE))
-                  show_error("Klasör erişimi kayboldu.\nA ile Download klasörünü yeniden seçin.")
-                  return
-              directory.list_dir_begin()
-              while true:
-                  var file_name := directory.get_next()
-                  if file_name.is_empty():
-                      break
-                  if not directory.current_is_dir() and file_name.get_extension().to_lower() in IMAGE_EXTENSIONS:
-                      photo_files.append(file_name)
-              directory.list_dir_end()
-              photo_files.sort()
-              if photo_files.is_empty():
-                  show_error("Seçilen klasörde JPG, PNG veya WEBP fotoğraf yok.")
-                  return
-              selected_file = clampi(selected_file, 0, photo_files.size() - 1)
-              library_open = true
-              photo.visible = false
-              photo_status.visible = false
-              info_panel.visible = true
-              update_library_text()
-
-          func update_library_text() -> void:
-              var lines: Array[String] = []
-              var first := maxi(0, selected_file - 2)
-              var last := mini(photo_files.size(), first + 5)
-              first = maxi(0, last - 5)
-              for index in range(first, last):
-                  lines.append(("> " if index == selected_file else "  ") + photo_files[index])
-              message.text = "\n".join(lines)
-              help.text = "Sağ çubuk: Seç   A: Aç   B: Geri"
-
-          func open_selected_library_photo() -> void:
-              if photo_files.is_empty():
-                  return
-              library_open = false
-              load_photo_from_uri(folder_uri + "#" + photo_files[selected_file])
-
-          func load_photo_from_uri(uri: String) -> void:
-              # Godot 4.6 Android SAF: seçicinin verdiği content:// URI iznini
-              # koru ve URI'yi doğrudan FileAccess ile aç.
-              var android_runtime := Engine.get_singleton("AndroidRuntime")
-              if android_runtime != null and uri.begins_with("content://"):
-                  android_runtime.updatePersistableUriPermission(uri, true)
-
-              var file := FileAccess.open(uri, FileAccess.READ)
-              if file == null:
-                  show_error("Seçilen fotoğraf açılamadı.\nA ile başka bir fotoğraf seçebilirsiniz.")
-                  return
-
-              # Android SAF/content:// kaynaklarında dosya boyutu -1 veya 0
-              # dönebilir. Bu nedenle akışı sabit parçalar halinde sonuna kadar oku.
-              var bytes := PackedByteArray()
-              var known_length := file.get_length()
-              if known_length > 0:
-                  bytes = file.get_buffer(known_length)
-              else:
-                  const READ_CHUNK_SIZE := 1024 * 1024
-                  while not file.eof_reached():
-                      var chunk := file.get_buffer(READ_CHUNK_SIZE)
-                      if chunk.is_empty():
-                          break
-                      bytes.append_array(chunk)
-              file.close()
-              if bytes.is_empty():
-                  show_error("Fotoğraf verisi okunamadı.\nA ile yeniden deneyin.")
-                  return
-
-              var image := Image.new()
-              var error := image.load_jpg_from_buffer(bytes)
-              if error != OK:
-                  error = image.load_png_from_buffer(bytes)
-              if error != OK:
-                  error = image.load_webp_from_buffer(bytes)
-              if error != OK or image.is_empty():
-                  show_error("Bu fotoğraf biçimi açılamadı.\nJPG, PNG veya WEBP seçin.")
-                  return
-
-              # Orijinal çözülmüş pikselleri aynen GPU'ya gönder. Mipmap üretme,
-              # yeniden boyutlandırma, yeniden sıkıştırma veya JPEG'e yeniden
-              # kaydetme yapılmaz. Her göz tek özgün SBS dokunun kendi yarısını okur.
-              current_texture = ImageTexture.create_from_image(image)
-              current_name = uri.get_file().uri_decode()
-              var material := photo.get_active_material(0) as ShaderMaterial
-              material.set_shader_parameter("stereo_photo", current_texture)
-              material.set_shader_parameter("swap_eyes", swapped)
-
-              var eye_aspect := (float(image.get_width()) * 0.5) / float(image.get_height())
-              var height := 1.8
-              var width := height * eye_aspect
-              base_photo_size = Vector2(width, height)
-              photo_scale = 1.0
-              apply_photo_scale()
-              viewing_distance = 2.4
-              recenter_display()
-              info_panel.visible = false
-              photo.visible = true
-              photo_status.visible = true
-              update_status()
-
-          func _notification(what: int) -> void:
-              if what == NOTIFICATION_APPLICATION_PAUSED and picker_open:
-                  application_was_paused = true
-              elif what == NOTIFICATION_APPLICATION_RESUMED and picker_open:
-                  get_tree().paused = false
-                  wait_for_a_release = true
-                  # Android seçicisinin geri çağrısına birkaç kare süre tanı.
-                  # Geri çağrı gelmezse A düğmesinin kalıcı kilitlenmesini önle.
-                  var request_at_resume := picker_request_id
-                  unlock_picker_after_resume.call_deferred(request_at_resume)
-              elif what == NOTIFICATION_APPLICATION_RESUMED:
-                  # OpenXR yaşam döngüsünü Godot/Meta eklentisi yönetir. Burada
-                  # arayüzü elle kapatıp açmak kumanda oturumunu bozuyordu.
-                  get_tree().paused = false
-
-          func recover_xr_input() -> void:
-              if xr_recovery_running:
-                  xr_recovery_requested = true
-                  return
-              xr_recovery_running = true
-              xr_recovery_requested = false
-
-              # Callback ile APPLICATION_RESUMED farklı sıralarda gelebilir.
-              # Android penceresinin yeniden odaklanması için birkaç kare bekle.
-              for _frame in range(4):
-                  await get_tree().process_frame
-
-              var xr := XRServer.find_interface("OpenXR")
-              if xr != null:
-                  get_viewport().use_xr = false
-                  if xr.is_initialized():
-                      xr.uninitialize()
-                  for _frame in range(3):
-                      await get_tree().process_frame
-                  xr.render_target_size_multiplier = XR_RENDER_SCALE
-                  xr.initialize()
-                  for _frame in range(8):
-                      await get_tree().process_frame
-                  if xr.is_initialized():
-                      get_viewport().use_xr = true
-                      $FallbackCamera.current = false
-                  else:
-                      $FallbackCamera.current = true
-                      show_error("OpenXR yeniden başlatılamadı.\nUygulamayı kapatıp yeniden açın.")
-
-              # Yeni OpenXR oturumunun ürettiği yeni tracker nesnelerine bağlan.
-              await rebind_controllers()
-              wait_for_a_release = true
-              a_was_down = false
-              b_was_down = false
-              controls_armed = false
-              xr_recovery_running = false
-              if xr_recovery_requested:
-                  xr_recovery_requested = false
-                  # İlk klasör seçimi sonrasında uygulama bir kez yeniden açılır;
-                  # OpenXR arayüzüne burada elle müdahale edilmez.
-
-          func rebind_controllers() -> void:
-              # Quest'in Android dosya seçicisi OpenXR oturumunu durdurup yeniden
-              # kurabilir. XRController3D düğümlerini yeni izleyicilere yeniden bağla.
-              rebind_generation += 1
-              var generation := rebind_generation
-              left_controller.tracker = &""
-              right_controller.tracker = &""
-              await get_tree().process_frame
-              if generation != rebind_generation:
-                  return
-              left_controller.tracker = &"left_hand"
-              right_controller.tracker = &"right_hand"
-              a_was_down = false
-              b_was_down = false
-              controls_armed = false
-
-          func unlock_picker_after_resume(request_at_resume: int) -> void:
-              await get_tree().create_timer(1.0).timeout
-              if picker_open and picker_request_id == request_at_resume:
-                  picker_open = false
-                  application_was_paused = false
-                  wait_for_a_release = true
-                  if current_texture == null:
-                      show_error("Fotoğraf alınamadı.\nA ile yeniden seçim yapın.")
-                  # Android seçiciden sonra OpenXR elle yeniden başlatılmaz.
-
-          func show_error(text: String) -> void:
-              photo.visible = false
-              photo_status.visible = false
-              info_panel.visible = true
-              message.text = text
-              help.text = "A: Yeniden fotoğraf seç"
-
-          func recenter_display() -> void:
-              var camera_transform := xr_camera.transform
-              var forward := -camera_transform.basis.z
-              forward.y = 0.0
-              if forward.length_squared() < 0.001:
-                  forward = Vector3.FORWARD
-              forward = forward.normalized()
-              display.position = camera_transform.origin + forward * viewing_distance
-              display.position.y = camera_transform.origin.y
-              display.look_at(camera_transform.origin, Vector3.UP, true)
-
-          func _process(delta: float) -> void:
-              # Sinyaller dosya seçiciden sonra Quest'te kaybolabildiği için bütün
-              # sağ kumanda kontrollerini her kare doğrudan OpenXR durumundan oku.
-              var a_down := controller_button_down(A_BUTTON_NAMES)
-              var b_down := controller_button_down(B_BUTTON_NAMES)
-
-              # Seçiciden dönerken basılı kalan A yeni bir seçim başlatmasın.
-              if not controls_armed:
-                  if not a_down and not b_down:
-                      controls_armed = true
-                  a_was_down = a_down
-                  b_was_down = b_down
-              else:
-                  if a_down and not a_was_down:
-                      request_photo_picker()
-                  if b_down and not b_was_down:
-                      swap_stereo_eyes()
-                  a_was_down = a_down
-                  b_was_down = b_down
-
-              if picker_open:
-                  return
-              var stick := controller_stick()
-              if library_open:
-                  if abs(stick.y) < 0.25:
-                      stick_was_active = false
-                  elif not stick_was_active:
-                      selected_file = clampi(selected_file + (1 if stick.y < 0.0 else -1), 0, photo_files.size() - 1)
-                      stick_was_active = true
-                      update_library_text()
-                  return
-              if current_texture == null:
-                  return
-              if abs(stick.y) > 0.18:
-                  photo_scale = clampf(
-                      photo_scale - stick.y * ZOOM_SPEED * delta,
-                      MIN_PHOTO_SCALE,
-                      MAX_PHOTO_SCALE
-                  )
-                  apply_photo_scale()
-                  update_status()
-
-          func controller_button_down(names: Array) -> bool:
-              for button_name in names:
-                  if right_controller.is_button_pressed(button_name):
-                      return true
-              return false
-
-          func controller_stick() -> Vector2:
-              for stick_name in STICK_NAMES:
-                  var value := right_controller.get_vector2(stick_name)
-                  if value.length_squared() > 0.0001:
-                      return value
-              return Vector2.ZERO
-
-          func apply_photo_scale() -> void:
-              photo.mesh.size = base_photo_size * photo_scale
-
-          func update_status() -> void:
-              photo_status.text = "A: Başka fotoğraf   B: Gözleri değiştir   Sağ çubuk: Büyüt / küçült   %d%%" % int(photo_scale * 100.0)
-
-          func request_photo_picker() -> void:
-              var now := Time.get_ticks_msec()
-              if picker_open or now - last_a_action_ms < BUTTON_COOLDOWN_MS:
-                  return
-              last_a_action_ms = now
-              if library_open:
-                  open_selected_library_photo()
-              else:
-                  open_photo_picker()
-
-          func swap_stereo_eyes() -> void:
-              if library_open:
-                  library_open = false
-                  if current_texture == null:
-                      show_welcome()
-                  else:
-                      info_panel.visible = false
-                      photo.visible = true
-                      photo_status.visible = true
-                  return
-              var now := Time.get_ticks_msec()
-              if current_texture == null or picker_open or now - last_b_action_ms < BUTTON_COOLDOWN_MS:
-                  return
-              last_b_action_ms = now
-              swapped = not swapped
-              var material := photo.get_active_material(0) as ShaderMaterial
-              material.set_shader_parameter("swap_eyes", swapped)
-              update_status()
-
-          func _on_right_button_pressed(button_name: String) -> void:
-              # Quest'te güvenilir çalışan gerçek OpenXR düğme olayı ana yoldur.
-              # Her-kare okuma yalnızca yedek ve çubuk için kullanılır.
-              controls_armed = true
-              if button_name in A_BUTTON_NAMES:
-                  request_photo_picker()
-              elif button_name in B_BUTTON_NAMES:
-                  swap_stereo_eyes()
-
-          func _on_left_button_pressed(_button_name: String) -> void:
-              pass
-
-          func _unhandled_input(event: InputEvent) -> void:
-              if event.is_action_pressed("ui_accept"):
-                  request_photo_picker()
-              elif event.is_action_pressed("ui_cancel") and current_texture != null:
-                  swap_stereo_eyes()
-          EOF
-
-          # v0.4.8: normal acilis ana ekrandir. SAF donusunde eski Activity'yi
-          # recreate etmek yerine uygulama temiz bir Android task olarak acilir.
-          cat > StereoViewer/main.gd <<'EOF'
-          extends Node3D
-
-          const XR_RENDER_SCALE := 1.25
-          const BUTTON_COOLDOWN_MS := 350
-          const XR_STARTUP_FRAMES := 12
-          const CONTROLLER_STABLE_FRAMES := 12
-          const STICK_DEADZONE := 0.28
-          const HORIZONTAL_TRIGGER := 0.42
-          const HORIZONTAL_RELEASE := 0.22
-          const MIN_DISTANCE := 0.75
-          const MAX_DISTANCE := 5.00
-          const DISTANCE_SPEED := 1.55
-          const IMAGE_EXTENSIONS := ["jpg", "jpeg", "png", "webp"]
-          const PHOTO_ROOTS := [
-              "/storage/emulated/0/Download",
-              "/storage/emulated/0/DCIM",
-              "/storage/emulated/0/Pictures"
-          ]
-          const PENDING_PHOTO_FILE := "user://pending_photo_uri.txt"
-
-          const A_BUTTON_NAMES := [
-              &"ax_button", &"a_button", &"a_click", &"primary_click",
-              &"primary_button", &"primary_button_click"
-          ]
-          const B_BUTTON_NAMES := [
-              &"by_button", &"b_button", &"b_click", &"secondary_click",
-              &"secondary_button", &"secondary_button_click"
-          ]
-          const STICK_NAMES := [&"primary", &"thumbstick", &"joystick"]
+          const BUILD_TEXT := "v0.5.0 - build 23"
+          const MIN_DISTANCE := 0.85
+          const MAX_DISTANCE := 4.50
+          const DISTANCE_SPEED := 1.25
+          const STICK_TRIGGER := 0.62
+          const STICK_RELEASE := 0.24
 
           @onready var xr_camera: XRCamera3D = $XROrigin3D/XRCamera3D
           @onready var display: Node3D = $XROrigin3D/Display
           @onready var photo: MeshInstance3D = $XROrigin3D/Display/Photo
           @onready var info_panel: Node3D = $XROrigin3D/Display/InfoPanel
+          @onready var title: Label3D = $XROrigin3D/Display/InfoPanel/Title
           @onready var message: Label3D = $XROrigin3D/Display/InfoPanel/Message
           @onready var help: Label3D = $XROrigin3D/Display/InfoPanel/Help
           @onready var right_controller: XRController3D = $XROrigin3D/RightController
+          @onready var fallback_camera: Camera3D = $FallbackCamera
 
-          var current_texture: ImageTexture
-          var current_uri := ""
-          var current_name := ""
-          var photo_files: Array[String] = []
-          var current_index := -1
-          var swapped := false
-          var viewing_distance := 2.4
-          var picker_open := false
-          var picker_generation := 0
-          var last_a_action_ms := -1000
-          var last_b_action_ms := -1000
-          var a_was_down := false
-          var b_was_down := false
-          var controls_armed := false
-          var horizontal_latched := false
           var xr_ready := false
-          var controller_ready_frames := 0
-          var transition_running := false
+          var a_count := 0
+          var b_count := 0
+          var horizontal_count := 0
+          var viewing_distance := 2.10
+          var horizontal_latched := false
+          var last_event := "Uygulama acildi"
 
           func _ready() -> void:
               process_mode = Node.PROCESS_MODE_ALWAYS
-              set_process(true)
-              controls_armed = false
+              photo.visible = false
+              info_panel.visible = true
+              title.text = "StereoViewer kararlilik testi"
+              right_controller.button_pressed.connect(_on_right_button_pressed)
+              attach_panel_to_camera()
+              initialize_xr()
+              update_panel()
+
+          func initialize_xr() -> void:
+              var xr_interface := XRServer.find_interface("OpenXR")
+              if xr_interface != null and xr_interface.is_initialized():
+                  DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+                  get_viewport().use_xr = true
+                  xr_ready = true
+                  last_event = "OpenXR hazir"
+                  return
+
+              # Bu ekran yalnizca OpenXR baslatilamazsa masaustu penceresinde
+              # gorunur. Quest'te normal yol yukaridaki hazir OpenXR oturumudur.
+              fallback_camera.current = true
               xr_ready = false
-              await start_xr_session()
-              recenter_display()
-              if not consume_pending_photo():
-                  show_welcome()
+              last_event = "OpenXR BASLATILAMADI"
 
-          func start_xr_session() -> void:
-              var xr := XRServer.find_interface("OpenXR")
-              # Godot/Quest XR oturumunu uygulama acilirken zaten kurabilir.
-              # Calisan oturumu kapatmak uygulamanin hic gorunmemesine yol acar.
-              if xr != null and not xr.is_initialized():
-                  xr.render_target_size_multiplier = XR_RENDER_SCALE
-                  xr.initialize()
-              if xr == null or not xr.is_initialized():
-                  $FallbackCamera.current = true
-                  message.text = "OpenXR başlatılamadı."
-                  help.text = "Uygulamayı Quest içinde yeniden başlatın."
-                  return
-              get_viewport().use_xr = true
-              DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
-              for frame in range(XR_STARTUP_FRAMES):
-                  await get_tree().process_frame
-              xr_ready = true
+          func attach_panel_to_camera() -> void:
+              # Paneli dogrudan HMD kamerasina baglamak, tracking origin ve
+              # yeniden merkezleme farklarindan bagimsiz olarak gorunmesini saglar.
+              display.reparent(xr_camera, false)
+              display.rotation = Vector3.ZERO
+              update_panel_distance()
 
-          func show_welcome() -> void:
-              photo.visible = false
-              info_panel.visible = true
-              message.text = "A düğmesine basarak\nbir SBS fotoğraf seçin."
-              help.text = "A: Fotoğraf tarayıcısını aç"
+          func update_panel_distance() -> void:
+              display.position = Vector3(0.0, 0.0, -viewing_distance)
 
-          func open_photo_picker() -> void:
-              if picker_open or transition_running or not xr_ready:
-                  return
-              if not DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
-                  show_error("Sistem fotoğraf tarayıcısı açılamadı.")
-                  return
-              picker_open = true
-              picker_generation += 1
-              info_panel.visible = true
-              message.text = "Fotoğraf tarayıcısı açılıyor..."
-              help.text = "Bir JPG, PNG veya WEBP fotoğraf seçin."
-              var filters := PackedStringArray([
-                  "*.jpg,*.jpeg,*.png,*.webp;Fotoğraflar;image/jpeg,image/png,image/webp"
-              ])
-              var result := DisplayServer.file_dialog_show(
-                  "SBS fotoğraf seç",
-                  "",
-                  "",
-                  false,
-                  DisplayServer.FILE_DIALOG_MODE_OPEN_FILE,
-                  filters,
-                  _on_photo_selected
-              )
-              if result != OK:
-                  picker_open = false
-                  restore_current_view_or_welcome()
-
-          func _on_photo_selected(status: bool, paths: PackedStringArray, _filter_index: int) -> void:
-              picker_open = false
-              controls_armed = false
-              a_was_down = false
-              b_was_down = false
-              horizontal_latched = false
-              if not status or paths.is_empty():
-                  restore_current_view_or_welcome()
-                  return
-              current_uri = paths[0]
-              var android_runtime := Engine.get_singleton("AndroidRuntime")
-              if android_runtime != null and current_uri.begins_with("content://"):
-                  android_runtime.updatePersistableUriPermission(current_uri, true)
-              if not save_pending_photo(current_uri):
-                  show_error("Seçilen fotoğraf kaydedilemedi.")
-                  return
-              # SAF ekranı Quest'te OpenXR kumanda akışını donduruyor.
-              # Activity.recreate() ikinci seçimde kararsız kaldığı için uygulama
-              # temiz bir Android task olarak yeniden başlatılır. Pending URI tek
-              # kullanımlıktır; normal uygulama açılışı daima ana ekranı gösterir.
-              if android_runtime != null:
-                  transition_running = true
-                  xr_ready = false
-                  info_panel.visible = true
-                  photo.visible = false
-                  message.text = "Fotoğraf açılıyor..."
-                  help.text = ""
-                  restart_android_app(android_runtime)
-                  return
-              if load_photo(current_uri):
-                  rebuild_photo_list(current_name)
-
-          func save_pending_photo(uri: String) -> bool:
-              var file := FileAccess.open(PENDING_PHOTO_FILE, FileAccess.WRITE)
-              if file == null:
-                  return false
-              file.store_string(uri)
-              file.close()
-              return true
-
-          func consume_pending_photo() -> bool:
-              if not FileAccess.file_exists(PENDING_PHOTO_FILE):
-                  return false
-              var file := FileAccess.open(PENDING_PHOTO_FILE, FileAccess.READ)
-              if file == null:
-                  return false
-              var uri := file.get_as_text().strip_edges()
-              file.close()
-              # Kayıt yalnızca sistem seçicisinden sonraki temiz başlangıç içindir.
-              # Burada hemen silinmesi, SideQuest veya normal açılışta eski
-              # fotoğrafın kendiliğinden görünmesini engeller.
-              DirAccess.remove_absolute(ProjectSettings.globalize_path(PENDING_PHOTO_FILE))
-              if uri.is_empty():
-                  return false
-              if load_photo(uri):
-                  rebuild_photo_list(current_name)
-                  return true
-              return false
-
-          func restart_android_app(android_runtime) -> void:
-              var activity = android_runtime.getActivity()
-              if activity == null:
-                  transition_running = false
-                  show_error("Uygulama yeniden başlatılamadı.")
-                  return
-              var restart_callable := func():
-                  var package_manager = activity.getPackageManager()
-                  var package_name = activity.getPackageName()
-                  var intent = package_manager.getLaunchIntentForPackage(package_name)
-                  if intent == null:
-                      activity.recreate()
-                      return
-                  # NEW_TASK | CLEAR_TOP | CLEAR_TASK: eski, donmuş OpenXR Activity
-                  # yığını bırakmadan tek ve temiz bir XR oturumu oluşturur.
-                  intent.addFlags(0x10000000 | 0x04000000 | 0x00008000)
-                  activity.startActivity(intent)
-                  activity.finishAffinity()
-              activity.runOnUiThread(
-                  android_runtime.createRunnableFromGodotCallable(restart_callable)
-              )
-
-          func rebuild_photo_list(selected_name: String) -> void:
-              photo_files.clear()
-              for root in PHOTO_ROOTS:
-                  scan_photo_directory(root, 0)
-              photo_files.sort_custom(func(a: String, b: String) -> bool:
-                  return a.naturalnocasecmp_to(b) < 0
-              )
-              current_index = -1
-              for index in range(photo_files.size()):
-                  if photo_files[index].get_file().nocasecmp_to(selected_name) == 0:
-                      current_index = index
-                      break
-              # Yalnızca seçilen fotoğrafla aynı klasördeki fotoğrafları tut.
-              if current_index >= 0:
-                  var selected_directory := photo_files[current_index].get_base_dir()
-                  var same_folder: Array[String] = []
-                  for candidate in photo_files:
-                      if candidate.get_base_dir() == selected_directory:
-                          same_folder.append(candidate)
-                  photo_files = same_folder
-                  current_index = -1
-                  for index in range(photo_files.size()):
-                      if photo_files[index].get_file().nocasecmp_to(selected_name) == 0:
-                          current_index = index
-                          break
-
-          func scan_photo_directory(path: String, depth: int) -> void:
-              if depth > 4:
-                  return
-              var directory := DirAccess.open(path)
-              if directory == null:
-                  return
-              directory.list_dir_begin()
-              while true:
-                  var entry := directory.get_next()
-                  if entry.is_empty():
-                      break
-                  if entry == "." or entry == "..":
-                      continue
-                  var full_path := path.path_join(entry)
-                  if directory.current_is_dir():
-                      scan_photo_directory(full_path, depth + 1)
-                  elif entry.get_extension().to_lower() in IMAGE_EXTENSIONS:
-                      photo_files.append(full_path)
-              directory.list_dir_end()
-
-          func load_photo(uri: String) -> bool:
-              var file := FileAccess.open(uri, FileAccess.READ)
-              if file == null:
-                  show_error("Fotoğraf açılamadı.\nA ile başka bir fotoğraf seçin.")
-                  return false
-              var bytes := PackedByteArray()
-              var known_length := file.get_length()
-              if known_length > 0:
-                  bytes = file.get_buffer(known_length)
-              else:
-                  const READ_CHUNK_SIZE := 1024 * 1024
-                  while not file.eof_reached():
-                      var chunk := file.get_buffer(READ_CHUNK_SIZE)
-                      if chunk.is_empty():
-                          break
-                      bytes.append_array(chunk)
-              file.close()
-              if bytes.is_empty():
-                  show_error("Fotoğraf verisi okunamadı.")
-                  return false
-
-              var image := Image.new()
-              var error := image.load_jpg_from_buffer(bytes)
-              if error != OK:
-                  error = image.load_png_from_buffer(bytes)
-              if error != OK:
-                  error = image.load_webp_from_buffer(bytes)
-              if error != OK or image.is_empty():
-                  show_error("Bu fotoğraf biçimi açılamadı.")
-                  return false
-
-              current_texture = ImageTexture.create_from_image(image)
-              current_uri = uri
-              # content:// adresinde klasör ayraçları kodlanmış olabilir.
-              # Önce URI'yi çöz, sonra yalnızca gerçek dosya adını al.
-              current_name = extract_photo_name(uri)
-              var material := photo.get_active_material(0) as ShaderMaterial
-              material.set_shader_parameter("stereo_photo", current_texture)
-              material.set_shader_parameter("swap_eyes", swapped)
-
-              var eye_aspect := (float(image.get_width()) * 0.5) / float(image.get_height())
-              var height := 1.8
-              photo.mesh.size = Vector2(height * eye_aspect, height)
-              info_panel.visible = false
-              photo.visible = true
-              return true
-
-          func extract_photo_name(uri: String) -> String:
-              var decoded := uri.uri_decode()
-              var name := decoded.get_file()
-              # DocumentsUI bazen son bölümü "primary:Download:foto.jpg"
-              # veya "primary:Download/foto.jpg" olarak verir.
-              if ":" in name:
-                  name = name.get_slice(":", name.get_slice_count(":") - 1)
-              if "/" in name:
-                  name = name.get_file()
-              return name
-
-          func show_adjacent_photo(direction: int) -> void:
-              if photo_files.is_empty() or current_index < 0:
-                  return
-              var next_index := current_index + direction
-              if next_index < 0 or next_index >= photo_files.size():
-                  return
-              if load_photo(photo_files[next_index]):
-                  current_index = next_index
-
-          func restore_current_view_or_welcome() -> void:
-              if current_texture == null:
-                  show_welcome()
-              else:
-                  info_panel.visible = false
-                  photo.visible = true
-
-          func show_error(text: String) -> void:
-              photo.visible = false
-              info_panel.visible = true
-              message.text = text
-              help.text = "A: Fotoğraf tarayıcısını aç"
-
-          func recenter_display() -> void:
-              var camera_transform := xr_camera.transform
-              var forward := -camera_transform.basis.z
-              forward.y = 0.0
-              if forward.length_squared() < 0.001:
-                  forward = Vector3.FORWARD
-              forward = forward.normalized()
-              display.position = camera_transform.origin + forward * viewing_distance
-              display.position.y = camera_transform.origin.y
-              display.look_at(camera_transform.origin, Vector3.UP, true)
+          func _on_right_button_pressed(action_name: StringName) -> void:
+              match action_name:
+                  &"ax_button":
+                      a_count += 1
+                      last_event = "A algilandi"
+                      update_panel()
+                  &"by_button":
+                      b_count += 1
+                      last_event = "B algilandi"
+                      update_panel()
 
           func _process(delta: float) -> void:
-              if transition_running or not xr_ready:
+              if not xr_ready:
                   return
-              var tracker := XRServer.get_tracker(&"right_hand")
-              if tracker == null:
-                  controller_ready_frames = 0
-                  controls_armed = false
-                  return
-              var a_down := controller_button_down(A_BUTTON_NAMES)
-              var b_down := controller_button_down(B_BUTTON_NAMES)
-              if controller_ready_frames < CONTROLLER_STABLE_FRAMES:
-                  if a_down or b_down:
-                      controller_ready_frames = 0
-                  else:
-                      controller_ready_frames += 1
-                  a_was_down = a_down
-                  b_was_down = b_down
-                  return
-              if not controls_armed:
-                  if not a_down and not b_down:
-                      controls_armed = true
-                  a_was_down = a_down
-                  b_was_down = b_down
-              else:
-                  if a_down and not a_was_down:
-                      request_photo_picker()
-                  if b_down and not b_was_down:
-                      swap_stereo_eyes()
-                  a_was_down = a_down
-                  b_was_down = b_down
 
-              if picker_open or current_texture == null:
-                  return
-              var stick := controller_stick()
+              var stick := right_controller.get_vector2(&"primary")
 
-              if abs(stick.x) >= HORIZONTAL_TRIGGER and not horizontal_latched:
+              if abs(stick.x) >= STICK_TRIGGER and not horizontal_latched:
                   horizontal_latched = true
-                  show_adjacent_photo(1 if stick.x > 0.0 else -1)
-              elif abs(stick.x) <= HORIZONTAL_RELEASE:
+                  horizontal_count += 1 if stick.x > 0.0 else -1
+                  last_event = "Cubuk SAG" if stick.x > 0.0 else "Cubuk SOL"
+                  update_panel()
+              elif abs(stick.x) <= STICK_RELEASE:
                   horizontal_latched = false
 
-              if abs(stick.y) >= STICK_DEADZONE and abs(stick.y) > abs(stick.x):
+              if abs(stick.y) > 0.20 and abs(stick.y) > abs(stick.x):
+                  var old_distance := viewing_distance
                   viewing_distance = clampf(
-                      viewing_distance + stick.y * DISTANCE_SPEED * delta,
+                      viewing_distance - stick.y * DISTANCE_SPEED * delta,
                       MIN_DISTANCE,
                       MAX_DISTANCE
                   )
-                  recenter_display()
+                  if not is_equal_approx(old_distance, viewing_distance):
+                      update_panel_distance()
+                      last_event = "Cubuk ILERI/GERI"
+                      update_panel()
 
-          func controller_button_down(names: Array) -> bool:
-              var tracker := XRServer.get_tracker(&"right_hand")
-              if tracker == null:
-                  return false
-              for button_name in names:
-                  var value = tracker.get_input(button_name)
-                  if value is bool and value:
-                      return true
-                  if value is float and value > 0.5:
-                      return true
-              return false
+          func update_panel() -> void:
+              message.text = (
+                  BUILD_TEXT
+                  + "\n\nA: " + str(a_count)
+                  + "     B: " + str(b_count)
+                  + "\nSag/sol: " + str(horizontal_count)
+                  + "     Mesafe: " + str(snappedf(viewing_distance, 0.01))
+                  + " m\n\nSon olay: " + last_event
+              )
+              help.text = "A ve B: sayac     Cubuk: sag/sol ve ileri/geri"
+          EOF
 
-          func controller_stick() -> Vector2:
-              var tracker := XRServer.get_tracker(&"right_hand")
-              if tracker == null:
-                  return Vector2.ZERO
-              for stick_name in STICK_NAMES:
-                  var value = tracker.get_input(stick_name)
-                  if value is Vector2 and value.length_squared() > 0.0001:
-                      return value
-              return Vector2.ZERO
+          # Yalnizca Meta Quest Touch denetleyicisi icin kucuk ve acik bir
+          # OpenXR eylem haritasi. Varsayilan, cok aygitli haritaya guvenilmez.
+          cat > StereoViewer/openxr_action_map.tres <<'EOF'
+          [gd_resource type="OpenXRActionMap" format=3]
 
-          func request_photo_picker() -> void:
-              var now := Time.get_ticks_msec()
-              if picker_open or now - last_a_action_ms < BUTTON_COOLDOWN_MS:
-                  return
-              last_a_action_ms = now
-              open_photo_picker()
+          [sub_resource type="OpenXRAction" id="ActionDefaultPose"]
+          resource_name = "default_pose"
+          localized_name = "Default pose"
+          action_type = 3
+          toplevel_paths = PackedStringArray("/user/hand/left", "/user/hand/right")
 
-          func swap_stereo_eyes() -> void:
-              var now := Time.get_ticks_msec()
-              if current_texture == null or picker_open or now - last_b_action_ms < BUTTON_COOLDOWN_MS:
-                  return
-              last_b_action_ms = now
-              swapped = not swapped
-              var material := photo.get_active_material(0) as ShaderMaterial
-              material.set_shader_parameter("swap_eyes", swapped)
+          [sub_resource type="OpenXRAction" id="ActionA"]
+          resource_name = "ax_button"
+          localized_name = "A button"
+          action_type = 0
+          toplevel_paths = PackedStringArray("/user/hand/right")
+
+          [sub_resource type="OpenXRAction" id="ActionB"]
+          resource_name = "by_button"
+          localized_name = "B button"
+          action_type = 0
+          toplevel_paths = PackedStringArray("/user/hand/right")
+
+          [sub_resource type="OpenXRAction" id="ActionStick"]
+          resource_name = "primary"
+          localized_name = "Right thumbstick"
+          action_type = 2
+          toplevel_paths = PackedStringArray("/user/hand/right")
+
+          [sub_resource type="OpenXRActionSet" id="ActionSetViewer"]
+          resource_name = "viewer"
+          localized_name = "StereoViewer controls"
+          priority = 0
+          actions = [SubResource("ActionDefaultPose"), SubResource("ActionA"), SubResource("ActionB"), SubResource("ActionStick")]
+
+          [sub_resource type="OpenXRIPBinding" id="BindingPoseLeft"]
+          action = SubResource("ActionDefaultPose")
+          binding_path = "/user/hand/left/input/aim/pose"
+
+          [sub_resource type="OpenXRIPBinding" id="BindingPoseRight"]
+          action = SubResource("ActionDefaultPose")
+          binding_path = "/user/hand/right/input/aim/pose"
+
+          [sub_resource type="OpenXRIPBinding" id="BindingA"]
+          action = SubResource("ActionA")
+          binding_path = "/user/hand/right/input/a/click"
+
+          [sub_resource type="OpenXRIPBinding" id="BindingB"]
+          action = SubResource("ActionB")
+          binding_path = "/user/hand/right/input/b/click"
+
+          [sub_resource type="OpenXRIPBinding" id="BindingStick"]
+          action = SubResource("ActionStick")
+          binding_path = "/user/hand/right/input/thumbstick"
+
+          [sub_resource type="OpenXRInteractionProfile" id="ProfileTouch"]
+          interaction_profile_path = "/interaction_profiles/oculus/touch_controller"
+          bindings = [SubResource("BindingPoseLeft"), SubResource("BindingPoseRight"), SubResource("BindingA"), SubResource("BindingB"), SubResource("BindingStick")]
+
+          [resource]
+          action_sets = [SubResource("ActionSetViewer")]
+          interaction_profiles = [SubResource("ProfileTouch")]
           EOF
 
           test -s StereoViewer/project.godot
           test -s StereoViewer/Main.tscn
-          test -s StereoViewer/main.gd
+          test -s StereoViewer/baseline.gd
+          test -s StereoViewer/openxr_action_map.tres
           test -s StereoViewer/stereo.gdshader
+          test -s StereoViewer/thumbnail.gdshader
+          if grep -Eq \
+            'request_permission|DirAccess|FileAccess|gallery|activity|content://' \
+            StereoViewer/baseline.gd; then
+            echo "HATA: Kararlilik testine fotograf veya Android kodu karismis."
+            exit 1
+          fi
+          grep -Fq 'res://baseline.gd' StereoViewer/Main.tscn
+          grep -Fq 'v0.5.0 - build 23' StereoViewer/baseline.gd
+          grep -Fq 'interaction_profiles/oculus/touch_controller' \
+            StereoViewer/openxr_action_map.tres
 
       - name: Godot 4.6 ve Android export template dosyalarini kur
         shell: bash
@@ -1108,7 +445,7 @@ jobs:
         run: |
           curl -fL --retry 3 \
             -o /tmp/openxr-vendors.zip \
-            https://github.com/GodotVR/godot_openxr_vendors/releases/download/4.2.2-stable/godotopenxrvendorsaddon.zip
+            https://github.com/GodotVR/godot_openxr_vendors/releases/download/5.1.0-stable/godotopenxrvendorsaddon.zip
           rm -rf /tmp/openxr-vendors
           mkdir -p /tmp/openxr-vendors
           unzip -q -o /tmp/openxr-vendors.zip -d /tmp/openxr-vendors
@@ -1174,8 +511,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=21
-          version/name="0.4.8"
+          version/code=23
+          version/name="0.5.0"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -1190,9 +527,10 @@ jobs:
           keystore/release="${KEYSTORE_PATH}"
           keystore/release_user="stereoguide"
           keystore/release_password="StereoGuide2026"
-          permissions/read_external_storage=true
+          permissions/read_external_storage=false
+          permissions/read_media_images=false
           permissions/write_external_storage=false
-          permissions/custom_permissions=PackedStringArray("android.permission.READ_MEDIA_IMAGES")
+          permissions/custom_permissions=PackedStringArray()
           xr_features/xr_mode=1
           plugins/GodotOpenXRKHR=false
           plugins/GodotOpenXRLynx=false
@@ -1288,6 +626,14 @@ jobs:
             StereoViewer/build/badging.txt \
             'StereoViewer uygulama adi'
           require_text \
+            "versionCode='23'" \
+            StereoViewer/build/badging.txt \
+            'v0.5.0 Android surum kodu'
+          require_text \
+            "versionName='0.5.0'" \
+            StereoViewer/build/badging.txt \
+            'v0.5.0 Android surum adi'
+          require_text \
             "com.oculus.intent.category.VR" \
             StereoViewer/build/manifest.txt \
             'Quest VR uygulama kategorisi'
@@ -1335,7 +681,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.4.8-APK
+          name: StereoViewer-Quest-v0.5.0-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
