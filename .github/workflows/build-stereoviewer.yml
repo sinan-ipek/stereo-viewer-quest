@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.5.4 grip ile yatay ve dikey tasima kaynaklarini yaz
+      - name: StereoViewer v0.5.5 sistem cop kutusu kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.5.4"
+          config/version="0.5.5"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -196,7 +196,7 @@ jobs:
           pixel_size = 0.0025
           font_size = 27
           outline_size = 6
-          text = "v0.5.4 - build 27\n\nQuest fotoğraflarınızı açmaya hazır."
+          text = "v0.5.5 - build 28\n\nQuest fotoğraflarınızı açmaya hazır."
 
           [node name="Help" type="Label3D" parent="XROrigin3D/Display/InfoPanel"]
           position = Vector3(0, -0.55, 0)
@@ -298,9 +298,9 @@ jobs:
           [node name="FallbackCamera" type="Camera3D" parent="."]
           current = false
           EOF
-          # v0.5.4, calisan stereo, galeri ve Quest Touch temelini korur.
-          # Sag grip basili tutulurken fotograf penceresi yatay ve dikey tasinir.
-          # Quest'in Pictures, DCIM ve Download klasorleri arka planda taranir.
+          # v0.5.5, calisan stereo, galeri, grip ve Quest Touch temelini korur.
+          # Sag tetik bir saniye tutulunca uygulama ici silme onayi acilir.
+          # A onayindan sonra Android MediaStore sistem cop kutusu penceresi acilir.
           cat > StereoViewer/viewer.gd <<'EOF'
           extends Node3D
 
@@ -308,18 +308,24 @@ jobs:
               HOME,
               LOADING,
               GALLERY,
-              PHOTO
+              PHOTO,
+              DELETE_CONFIRM,
+              TRASH_WAIT
           }
 
-          const BUILD_TEXT := "v0.5.4 - build 27"
+          const BUILD_TEXT := "v0.5.5 - build 28"
           const PERMISSION_IMAGES := "android.permission.READ_MEDIA_IMAGES"
           const PERMISSION_VISUAL_SELECTED := "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
           const PERMISSION_LEGACY := "android.permission.READ_EXTERNAL_STORAGE"
+          const ANDROID_TRASH_REQUEST_CODE := 5501
           const MIN_DISTANCE := 0.85
           const MAX_DISTANCE := 4.50
           const DISTANCE_SPEED := 1.25
           const GRIP_PRESS_THRESHOLD := 0.55
           const GRIP_RELEASE_THRESHOLD := 0.35
+          const TRIGGER_PRESS_THRESHOLD := 0.60
+          const TRIGGER_RELEASE_THRESHOLD := 0.25
+          const DELETE_HOLD_SECONDS := 1.0
           const MAX_HORIZONTAL_OFFSET := 1.50
           const MAX_VERTICAL_OFFSET := 1.25
           const STICK_TRIGGER := 0.62
@@ -359,6 +365,11 @@ jobs:
           var grip_drag_vertical_axis := Vector3.UP
           var swap_eyes := false
           var horizontal_latched := false
+          var delete_hold_elapsed := 0.0
+          var delete_trigger_armed := true
+          var trash_request_waiting := false
+          var trash_result_check_scheduled := false
+          var trash_requested_path := ""
           var library_scanned := false
           var permission_waiting := false
           var permission_check_scheduled := false
@@ -469,6 +480,8 @@ jobs:
                       open_photo(current_index)
                   ViewMode.PHOTO:
                       open_gallery()
+                  ViewMode.DELETE_CONFIRM:
+                      request_current_photo_trash()
 
           func handle_b_button() -> void:
               match mode:
@@ -477,6 +490,8 @@ jobs:
                   ViewMode.PHOTO:
                       swap_eyes = not swap_eyes
                       photo_material.set_shader_parameter("swap_eyes", swap_eyes)
+                  ViewMode.DELETE_CONFIRM:
+                      cancel_delete_confirmation()
 
           func _process(delta: float) -> void:
               finish_scan_if_ready()
@@ -485,6 +500,7 @@ jobs:
               if not xr_ready:
                   return
 
+              process_delete_trigger(delta)
               process_grip_drag()
 
               var stick := right_controller.get_vector2(&"primary")
@@ -501,6 +517,26 @@ jobs:
                       MAX_DISTANCE
                   )
                   update_display_distance()
+
+          func process_delete_trigger(delta: float) -> void:
+              var trigger_value := right_controller.get_float(&"trigger")
+              apply_delete_trigger(trigger_value, delta)
+
+          func apply_delete_trigger(trigger_value: float, delta: float) -> void:
+              if trigger_value <= TRIGGER_RELEASE_THRESHOLD:
+                  delete_hold_elapsed = 0.0
+                  delete_trigger_armed = true
+                  return
+
+              if mode != ViewMode.PHOTO or not delete_trigger_armed:
+                  return
+
+              if trigger_value >= TRIGGER_PRESS_THRESHOLD:
+                  delete_hold_elapsed += delta
+                  if delete_hold_elapsed >= DELETE_HOLD_SECONDS:
+                      delete_hold_elapsed = 0.0
+                      delete_trigger_armed = false
+                      show_delete_confirmation()
 
           func process_grip_drag() -> void:
               if mode != ViewMode.PHOTO:
@@ -586,6 +622,154 @@ jobs:
               info_message.text = BUILD_TEXT + "\n\n" + message
               info_help.text = help_text
 
+          func show_delete_confirmation() -> void:
+              if mode != ViewMode.PHOTO or photo_paths.is_empty():
+                  return
+              mode = ViewMode.DELETE_CONFIRM
+              grip_dragging = false
+              photo.visible = false
+              selector.visible = false
+              info_panel.visible = true
+              info_message.text = (
+                  "Bu fotoğraf Quest çöp kutusuna taşınsın mı?\n\n"
+                  + short_file_name(photo_paths[current_index])
+              )
+              info_help.text = "A: çöpe taşı     B: vazgeç"
+
+          func cancel_delete_confirmation() -> void:
+              if photo_paths.is_empty():
+                  open_gallery()
+                  return
+              open_photo(current_index)
+
+          func request_current_photo_trash() -> void:
+              if trash_request_waiting or photo_paths.is_empty():
+                  return
+              if OS.get_name() != "Android" or get_android_sdk() < 30:
+                  show_trash_error("Sistem çöp kutusu bu Android sürümünde kullanılamıyor.")
+                  return
+
+              var path := photo_paths[current_index]
+              var media_uri = find_media_store_uri(path)
+              if media_uri == null:
+                  show_trash_error("Fotoğraf Android medya arşivinde bulunamadı.")
+                  return
+
+              var wrapper = Engine.get_singleton("JavaClassWrapper")
+              var android_runtime = Engine.get_singleton("AndroidRuntime")
+              if wrapper == null or android_runtime == null:
+                  show_trash_error("Android çöp kutusu bağlantısı başlatılamadı.")
+                  return
+
+              var activity = android_runtime.getActivity()
+              var resolver = android_runtime.getApplicationContext().getContentResolver()
+              var array_list_class = wrapper.wrap("java.util.ArrayList")
+              var media_store_class = wrapper.wrap("android.provider.MediaStore")
+              var uris = array_list_class.ArrayList()
+              uris.add(media_uri)
+              var pending_intent = media_store_class.createTrashRequest(
+                  resolver,
+                  uris,
+                  true
+              )
+
+              trash_requested_path = path
+              trash_request_waiting = true
+              mode = ViewMode.TRASH_WAIT
+              photo.visible = false
+              selector.visible = false
+              info_panel.visible = true
+              info_message.text = "Quest sistem onayı bekleniyor..."
+              info_help.text = "Sistem penceresinde seçiminizi yapın"
+
+              var launch_request := func() -> void:
+                  activity.startIntentSenderForResult(
+                      pending_intent.getIntentSender(),
+                      ANDROID_TRASH_REQUEST_CODE,
+                      null,
+                      0,
+                      0,
+                      0
+                  )
+              activity.runOnUiThread(
+                  android_runtime.createRunnableFromGodotCallable(launch_request)
+              )
+
+          func find_media_store_uri(path: String):
+              var wrapper = Engine.get_singleton("JavaClassWrapper")
+              var android_runtime = Engine.get_singleton("AndroidRuntime")
+              if wrapper == null or android_runtime == null:
+                  return null
+
+              var resolver = android_runtime.getApplicationContext().getContentResolver()
+              var files_class = wrapper.wrap("android.provider.MediaStore$Files")
+              var content_uris_class = wrapper.wrap("android.content.ContentUris")
+              var collection_uri = files_class.getContentUri("external")
+              var cursor = resolver.query(
+                  collection_uri,
+                  PackedStringArray(["_id"]),
+                  "_data = ?",
+                  PackedStringArray([path]),
+                  null
+              )
+              if cursor == null:
+                  return null
+
+              var result_uri = null
+              if cursor.moveToFirst():
+                  result_uri = content_uris_class.withAppendedId(
+                      collection_uri,
+                      cursor.getLong(0)
+                  )
+              cursor.close()
+              return result_uri
+
+          func show_trash_error(message: String) -> void:
+              trash_request_waiting = false
+              trash_requested_path = ""
+              mode = ViewMode.DELETE_CONFIRM
+              photo.visible = false
+              selector.visible = false
+              info_panel.visible = true
+              info_message.text = message
+              info_help.text = "B: fotoğrafa dön"
+
+          func schedule_trash_result_check() -> void:
+              if trash_result_check_scheduled:
+                  return
+              trash_result_check_scheduled = true
+              await get_tree().create_timer(0.75).timeout
+              trash_result_check_scheduled = false
+              if not trash_request_waiting:
+                  return
+
+              var requested_path := trash_requested_path
+              trash_request_waiting = false
+              trash_requested_path = ""
+              if find_media_store_uri(requested_path) == null:
+                  finish_successful_trash(requested_path)
+              else:
+                  open_photo(current_index)
+
+          func finish_successful_trash(path: String) -> void:
+              var removed_index := photo_paths.find(path)
+              if removed_index >= 0:
+                  photo_paths.remove_at(removed_index)
+              gallery_generation += 1
+              thumbnail_queue.clear()
+              current_texture = null
+
+              if photo_paths.is_empty():
+                  current_index = 0
+                  show_library_message(
+                      "Fotoğraf çöp kutusuna taşındı.\nGaleride başka fotoğraf kalmadı.",
+                      "A: yeniden tara"
+                  )
+                  return
+
+              current_index = mini(maxi(removed_index, 0), photo_paths.size() - 1)
+              open_photo(current_index)
+
           func begin_library_access() -> void:
               if scan_running or permission_waiting:
                   return
@@ -627,8 +811,11 @@ jobs:
                   schedule_permission_check()
 
           func _notification(what: int) -> void:
-              if what == NOTIFICATION_APPLICATION_RESUMED and permission_waiting:
-                  schedule_permission_check()
+              if what == NOTIFICATION_APPLICATION_RESUMED:
+                  if permission_waiting:
+                      schedule_permission_check()
+                  if trash_request_waiting:
+                      schedule_trash_result_check()
 
           func schedule_permission_check() -> void:
               if permission_check_scheduled:
@@ -880,11 +1067,17 @@ jobs:
           action_type = 1
           toplevel_paths = PackedStringArray("/user/hand/right")
 
+          [sub_resource type="OpenXRAction" id="ActionTrigger"]
+          resource_name = "trigger"
+          localized_name = "Right trigger"
+          action_type = 1
+          toplevel_paths = PackedStringArray("/user/hand/right")
+
           [sub_resource type="OpenXRActionSet" id="ActionSetViewer"]
           resource_name = "viewer"
           localized_name = "StereoViewer controls"
           priority = 0
-          actions = [SubResource("ActionDefaultPose"), SubResource("ActionA"), SubResource("ActionB"), SubResource("ActionStick"), SubResource("ActionGrip")]
+          actions = [SubResource("ActionDefaultPose"), SubResource("ActionA"), SubResource("ActionB"), SubResource("ActionStick"), SubResource("ActionGrip"), SubResource("ActionTrigger")]
 
           [sub_resource type="OpenXRIPBinding" id="BindingPoseLeft"]
           action = SubResource("ActionDefaultPose")
@@ -910,9 +1103,13 @@ jobs:
           action = SubResource("ActionGrip")
           binding_path = "/user/hand/right/input/squeeze/value"
 
+          [sub_resource type="OpenXRIPBinding" id="BindingTrigger"]
+          action = SubResource("ActionTrigger")
+          binding_path = "/user/hand/right/input/trigger/value"
+
           [sub_resource type="OpenXRInteractionProfile" id="ProfileTouch"]
           interaction_profile_path = "/interaction_profiles/oculus/touch_controller"
-          bindings = [SubResource("BindingPoseLeft"), SubResource("BindingPoseRight"), SubResource("BindingA"), SubResource("BindingB"), SubResource("BindingStick"), SubResource("BindingGrip")]
+          bindings = [SubResource("BindingPoseLeft"), SubResource("BindingPoseRight"), SubResource("BindingA"), SubResource("BindingB"), SubResource("BindingStick"), SubResource("BindingGrip"), SubResource("BindingTrigger")]
 
           [resource]
           action_sets = [SubResource("ActionSetViewer")]
@@ -932,7 +1129,7 @@ jobs:
             exit 1
           fi
           grep -Fq 'res://viewer.gd' StereoViewer/Main.tscn
-          grep -Fq 'v0.5.4 - build 27' StereoViewer/viewer.gd
+          grep -Fq 'v0.5.5 - build 28' StereoViewer/viewer.gd
           grep -Fq 'OS.request_permission(permission)' StereoViewer/viewer.gd
           grep -Fq 'OS.SYSTEM_DIR_PICTURES' StereoViewer/viewer.gd
           grep -Fq 'OS.SYSTEM_DIR_DCIM' StereoViewer/viewer.gd
@@ -945,7 +1142,15 @@ jobs:
           grep -Fq 'right_controller.get_float(&"grip")' StereoViewer/viewer.gd
           grep -Fq 'controller_delta.dot(grip_drag_horizontal_axis)' StereoViewer/viewer.gd
           grep -Fq 'controller_delta.dot(grip_drag_vertical_axis)' StereoViewer/viewer.gd
+          grep -Fq 'right_controller.get_float(&"trigger")' StereoViewer/viewer.gd
+          grep -Fq 'DELETE_HOLD_SECONDS := 1.0' StereoViewer/viewer.gd
+          grep -Fq 'android.provider.MediaStore$Files' StereoViewer/viewer.gd
+          grep -Fq 'createTrashRequest' StereoViewer/viewer.gd
+          grep -Fq 'startIntentSenderForResult' StereoViewer/viewer.gd
+          grep -Fq 'finish_successful_trash' StereoViewer/viewer.gd
           grep -Fq '/user/hand/right/input/squeeze/value' \
+            StereoViewer/openxr_action_map.tres
+          grep -Fq '/user/hand/right/input/trigger/value' \
             StereoViewer/openxr_action_map.tres
           grep -Fq 'interaction_profiles/oculus/touch_controller' \
             StereoViewer/openxr_action_map.tres
@@ -1042,8 +1247,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=27
-          version/name="0.5.4"
+          version/code=28
+          version/name="0.5.5"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -1157,13 +1362,13 @@ jobs:
             StereoViewer/build/badging.txt \
             'StereoViewer uygulama adi'
           require_text \
-            "versionCode='27'" \
+            "versionCode='28'" \
             StereoViewer/build/badging.txt \
-            'v0.5.4 Android surum kodu'
+            'v0.5.5 Android surum kodu'
           require_text \
-            "versionName='0.5.4'" \
+            "versionName='0.5.5'" \
             StereoViewer/build/badging.txt \
-            'v0.5.4 Android surum adi'
+            'v0.5.5 Android surum adi'
           require_text \
             "com.oculus.intent.category.VR" \
             StereoViewer/build/manifest.txt \
@@ -1220,7 +1425,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.5.4-APK
+          name: StereoViewer-Quest-v0.5.5-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
