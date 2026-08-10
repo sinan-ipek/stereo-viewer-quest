@@ -42,14 +42,14 @@ jobs:
           rm -rf StereoViewer
           mkdir -p StereoViewer/build
 
-      - name: StereoViewer v0.5.5 sistem cop kutusu kaynaklarini yaz
+      - name: StereoViewer v0.5.6 MediaStore duzeltmesi kaynaklarini yaz
         shell: bash
         run: |
           cat > StereoViewer/project.godot <<'EOF'
           [application]
           config/name="StereoViewer"
           config/description="Meta Quest icin SBS 3B fotograf goruntuleyici"
-          config/version="0.5.5"
+          config/version="0.5.6"
           config/icon="res://icon.svg"
           run/main_scene="res://Main.tscn"
           config/features=PackedStringArray("4.6", "GL Compatibility")
@@ -196,7 +196,7 @@ jobs:
           pixel_size = 0.0025
           font_size = 27
           outline_size = 6
-          text = "v0.5.5 - build 28\n\nQuest fotoğraflarınızı açmaya hazır."
+          text = "v0.5.6 - build 29\n\nQuest fotoğraflarınızı açmaya hazır."
 
           [node name="Help" type="Label3D" parent="XROrigin3D/Display/InfoPanel"]
           position = Vector3(0, -0.55, 0)
@@ -298,7 +298,7 @@ jobs:
           [node name="FallbackCamera" type="Camera3D" parent="."]
           current = false
           EOF
-          # v0.5.5, calisan stereo, galeri, grip ve Quest Touch temelini korur.
+          # v0.5.6, calisan stereo, galeri, grip ve Quest Touch temelini korur.
           # Sag tetik bir saniye tutulunca uygulama ici silme onayi acilir.
           # A onayindan sonra Android MediaStore sistem cop kutusu penceresi acilir.
           cat > StereoViewer/viewer.gd <<'EOF'
@@ -313,7 +313,7 @@ jobs:
               TRASH_WAIT
           }
 
-          const BUILD_TEXT := "v0.5.5 - build 28"
+          const BUILD_TEXT := "v0.5.6 - build 29"
           const PERMISSION_IMAGES := "android.permission.READ_MEDIA_IMAGES"
           const PERMISSION_VISUAL_SELECTED := "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
           const PERMISSION_LEGACY := "android.permission.READ_EXTERNAL_STORAGE"
@@ -652,8 +652,24 @@ jobs:
               var path := photo_paths[current_index]
               var media_uri = find_media_store_uri(path)
               if media_uri == null:
-                  show_trash_error("Fotoğraf Android medya arşivinde bulunamadı.")
-                  return
+                  mode = ViewMode.TRASH_WAIT
+                  photo.visible = false
+                  selector.visible = false
+                  info_panel.visible = true
+                  info_message.text = "Fotoğraf Android medya arşivine ekleniyor..."
+                  info_help.text = "Lütfen bekleyin"
+                  request_media_scan(path)
+                  await get_tree().create_timer(1.25).timeout
+                  media_uri = find_media_store_uri(path)
+                  if media_uri == null:
+                      await get_tree().create_timer(1.25).timeout
+                      media_uri = find_media_store_uri(path)
+                  if media_uri == null:
+                      show_trash_error(
+                          "Fotoğraf Android medya arşivine eklenemedi.\n"
+                          + "Fotoğraf dosyası yerinde bırakıldı."
+                      )
+                      return
 
               var wrapper = Engine.get_singleton("JavaClassWrapper")
               var android_runtime = Engine.get_singleton("AndroidRuntime")
@@ -704,25 +720,138 @@ jobs:
               var resolver = android_runtime.getApplicationContext().getContentResolver()
               var files_class = wrapper.wrap("android.provider.MediaStore$Files")
               var content_uris_class = wrapper.wrap("android.content.ContentUris")
-              var collection_uri = files_class.getContentUri("external")
-              var cursor = resolver.query(
+              var display_name := path.get_file()
+              var relative_path := media_store_relative_path(path)
+              var volumes := ["external_primary", "external"]
+
+              for volume in volumes:
+                  var collection_uri = files_class.getContentUri(volume)
+                  var result_uri = query_media_store_exact(
+                      resolver,
+                      content_uris_class,
+                      collection_uri,
+                      display_name,
+                      relative_path
+                  )
+                  if result_uri != null:
+                      return result_uri
+
+              return null
+
+          func query_media_store_exact(
+              resolver,
+              content_uris_class,
+              collection_uri,
+              display_name: String,
+              expected_relative_path: String
+          ):
+              if not expected_relative_path.is_empty():
+                  var exact_cursor = resolver.query(
+                      collection_uri,
+                      PackedStringArray(["_id"]),
+                      "_display_name = ? AND relative_path = ? AND is_trashed = 0",
+                      PackedStringArray([display_name, expected_relative_path]),
+                      null
+                  )
+                  if exact_cursor != null:
+                      if exact_cursor.moveToFirst():
+                          var exact_uri = content_uris_class.withAppendedId(
+                              collection_uri,
+                              exact_cursor.getLong(0)
+                          )
+                          exact_cursor.close()
+                          return exact_uri
+                      exact_cursor.close()
+
+              var name_cursor = resolver.query(
                   collection_uri,
-                  PackedStringArray(["_id"]),
-                  "_data = ?",
-                  PackedStringArray([path]),
+                  PackedStringArray(["_id", "relative_path"]),
+                  "_display_name = ? AND is_trashed = 0",
+                  PackedStringArray([display_name]),
                   null
               )
-              if cursor == null:
+              if name_cursor == null:
                   return null
 
-              var result_uri = null
-              if cursor.moveToFirst():
-                  result_uri = content_uris_class.withAppendedId(
-                      collection_uri,
-                      cursor.getLong(0)
-                  )
-              cursor.close()
-              return result_uri
+              var fallback_uri = null
+              while name_cursor.moveToNext():
+                  var candidate_value = name_cursor.getString(1)
+                  var candidate_relative := ""
+                  if candidate_value != null:
+                      candidate_relative = String(candidate_value)
+                  if media_paths_match(candidate_relative, expected_relative_path):
+                      fallback_uri = content_uris_class.withAppendedId(
+                          collection_uri,
+                          name_cursor.getLong(0)
+                      )
+                      break
+              name_cursor.close()
+              return fallback_uri
+
+          func media_store_relative_path(path: String) -> String:
+              var normalized_path := normalize_media_path(path)
+              for root in scan_roots:
+                  var normalized_root := normalize_media_path(root).trim_suffix("/")
+                  if normalized_path.begins_with(normalized_root + "/"):
+                      var child_path := normalized_path.substr(normalized_root.length() + 1)
+                      var child_directory := child_path.get_base_dir()
+                      var relative := normalized_root.get_file() + "/"
+                      if child_directory != "." and not child_directory.is_empty():
+                          relative += child_directory.trim_prefix("/") + "/"
+                      return relative
+
+              var storage_markers := [
+                  "/storage/emulated/0/",
+                  "/storage/self/primary/",
+                  "/sdcard/",
+                  "/mnt/sdcard/"
+              ]
+              for marker in storage_markers:
+                  var marker_index := normalized_path.find(marker)
+                  if marker_index >= 0:
+                      var relative_file := normalized_path.substr(
+                          marker_index + marker.length()
+                      )
+                      var relative_directory := relative_file.get_base_dir()
+                      if relative_directory == "." or relative_directory.is_empty():
+                          return ""
+                      return relative_directory.trim_prefix("/") + "/"
+              return ""
+
+          func normalize_media_path(path: String) -> String:
+              return path.replace("\\", "/").simplify_path()
+
+          func media_paths_match(candidate: String, expected: String) -> bool:
+              var normalized_candidate := candidate.replace("\\", "/").trim_suffix("/").to_lower()
+              var normalized_expected := expected.replace("\\", "/").trim_suffix("/").to_lower()
+              return (
+                  not normalized_expected.is_empty()
+                  and normalized_candidate == normalized_expected
+              )
+
+          func request_media_scan(path: String) -> void:
+              var wrapper = Engine.get_singleton("JavaClassWrapper")
+              var android_runtime = Engine.get_singleton("AndroidRuntime")
+              if wrapper == null or android_runtime == null:
+                  return
+              var scanner_class = wrapper.wrap("android.media.MediaScannerConnection")
+              scanner_class.scanFile(
+                  android_runtime.getApplicationContext(),
+                  PackedStringArray([path]),
+                  PackedStringArray([media_mime_type(path)]),
+                  null
+              )
+
+          func media_mime_type(path: String) -> String:
+              match path.get_extension().to_lower():
+                  "jpg", "jpeg", "jps":
+                      return "image/jpeg"
+                  "png":
+                      return "image/png"
+                  "webp":
+                      return "image/webp"
+                  _:
+                      return "image/jpeg"
 
           func show_trash_error(message: String) -> void:
               trash_request_waiting = false
@@ -1129,7 +1258,7 @@ jobs:
             exit 1
           fi
           grep -Fq 'res://viewer.gd' StereoViewer/Main.tscn
-          grep -Fq 'v0.5.5 - build 28' StereoViewer/viewer.gd
+          grep -Fq 'v0.5.6 - build 29' StereoViewer/viewer.gd
           grep -Fq 'OS.request_permission(permission)' StereoViewer/viewer.gd
           grep -Fq 'OS.SYSTEM_DIR_PICTURES' StereoViewer/viewer.gd
           grep -Fq 'OS.SYSTEM_DIR_DCIM' StereoViewer/viewer.gd
@@ -1145,6 +1274,8 @@ jobs:
           grep -Fq 'right_controller.get_float(&"trigger")' StereoViewer/viewer.gd
           grep -Fq 'DELETE_HOLD_SECONDS := 1.0' StereoViewer/viewer.gd
           grep -Fq 'android.provider.MediaStore$Files' StereoViewer/viewer.gd
+          grep -Fq 'relative_path = ?' StereoViewer/viewer.gd
+          grep -Fq 'android.media.MediaScannerConnection' StereoViewer/viewer.gd
           grep -Fq 'createTrashRequest' StereoViewer/viewer.gd
           grep -Fq 'startIntentSenderForResult' StereoViewer/viewer.gd
           grep -Fq 'finish_successful_trash' StereoViewer/viewer.gd
@@ -1247,8 +1378,8 @@ jobs:
           gradle_build/compress_native_libraries=false
           architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
-          version/code=28
-          version/name="0.5.5"
+          version/code=29
+          version/name="0.5.6"
           package/unique_name="com.stereoguide.viewer"
           package/name="StereoViewer"
           package/signed=true
@@ -1362,13 +1493,13 @@ jobs:
             StereoViewer/build/badging.txt \
             'StereoViewer uygulama adi'
           require_text \
-            "versionCode='28'" \
+            "versionCode='29'" \
             StereoViewer/build/badging.txt \
-            'v0.5.5 Android surum kodu'
+            'v0.5.6 Android surum kodu'
           require_text \
-            "versionName='0.5.5'" \
+            "versionName='0.5.6'" \
             StereoViewer/build/badging.txt \
-            'v0.5.5 Android surum adi'
+            'v0.5.6 Android surum adi'
           require_text \
             "com.oculus.intent.category.VR" \
             StereoViewer/build/manifest.txt \
@@ -1425,7 +1556,7 @@ jobs:
       - name: APK dosyasini yayinla
         uses: actions/upload-artifact@v4
         with:
-          name: StereoViewer-Quest-v0.5.5-APK
+          name: StereoViewer-Quest-v0.5.6-APK
           path: StereoViewer/build/StereoViewer-Quest.apk
           if-no-files-found: error
           retention-days: 30
